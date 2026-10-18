@@ -1,0 +1,171 @@
+cmake_minimum_required(VERSION 3.22)
+
+project(BannerPhysics VERSION 1.1.0 LANGUAGES C CXX)
+
+# Output folder
+if(NOT DEFINED OUTPUT_FOLDER)
+    if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
+        set(OUTPUT_FOLDER "$ENV{SKYRIM_FOLDER}/Data")
+    endif()
+
+    if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
+        set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/${PROJECT_NAME}")
+    endif()
+endif()
+
+# Dependencies
+set(COMMONLIBSSE_NG_ROOT "" CACHE PATH "Path to CommonLibSSE-NG")
+set(COMMONLIB_LIBRARY "" CACHE FILEPATH "Optional matching prebuilt CommonLibSSE library")
+set(MINHOOK_ROOT "" CACHE PATH "Path to MinHook")
+
+if(NOT COMMONLIBSSE_NG_ROOT AND DEFINED ENV{COMMONLIBSSE_NG_ROOT})
+    set(COMMONLIBSSE_NG_ROOT "$ENV{COMMONLIBSSE_NG_ROOT}")
+endif()
+
+if(NOT MINHOOK_ROOT AND DEFINED ENV{MINHOOK_ROOT})
+    set(MINHOOK_ROOT "$ENV{MINHOOK_ROOT}")
+endif()
+
+if(NOT EXISTS "${COMMONLIBSSE_NG_ROOT}/CMakeLists.txt")
+    message(FATAL_ERROR "Set COMMONLIBSSE_NG_ROOT to your CommonLibSSE-NG directory")
+endif()
+
+if(NOT EXISTS "${MINHOOK_ROOT}/CMakeLists.txt")
+    message(FATAL_ERROR "Set MINHOOK_ROOT to your MinHook directory")
+endif()
+
+find_package(Bullet CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+find_package(TBB CONFIG REQUIRED)
+find_package(directxtk CONFIG REQUIRED)
+find_path(XBYAK_INCLUDE_DIR xbyak/xbyak.h REQUIRED)
+
+# Keep the runtime layout used by the FSMP interface headers.
+set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_VR ON CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(COMMONLIB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
+set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+set(FETCHCONTENT_SOURCE_DIR_HDE64 "${MINHOOK_ROOT}" CACHE PATH "MinHook instruction decoder")
+
+if(COMMONLIB_LIBRARY)
+    add_library(CommonLibSSE STATIC IMPORTED)
+    set_target_properties(CommonLibSSE PROPERTIES IMPORTED_LOCATION "${COMMONLIB_LIBRARY}")
+else()
+    add_subdirectory(
+        "${COMMONLIBSSE_NG_ROOT}"
+        "${CMAKE_CURRENT_BINARY_DIR}/commonlib"
+    )
+endif()
+
+add_subdirectory("${MINHOOK_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/minhook")
+
+# Plugin metadata is declared in main.cpp.
+set(SOURCES
+    src/main.cpp
+    src/Utility.cpp
+    src/FSMPBridge.cpp
+    src/BannerRuntime.cpp
+    src/BannerCollision.cpp
+    src/BannerForces.cpp
+    src/BannerDegradation.cpp
+)
+
+add_library(${PROJECT_NAME} SHARED ${SOURCES})
+
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
+target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
+
+target_include_directories(${PROJECT_NAME}
+    PRIVATE
+        src
+        fsmp-abi
+        "${COMMONLIBSSE_NG_ROOT}/include"
+        "${COMMONLIBSSE_NG_ROOT}/extern/openvr/headers"
+        "${BULLET_INCLUDE_DIRS}"
+        "${XBYAK_INCLUDE_DIR}"
+)
+
+target_compile_definitions(${PROJECT_NAME}
+    PRIVATE
+        BT_USE_SSE_IN_API
+        NOMINMAX
+        WINVER=0x0601
+        _WIN32_WINNT=0x0601
+        ENABLE_SKYRIM_SE=1
+        ENABLE_SKYRIM_AE=1
+        ENABLE_SKYRIM_VR=1
+        HAS_SKYRIM_MULTI_TARGETING=1
+        SKSE_SUPPORT_XBYAK=1
+        SKSE_SUPPORT_PATCH_SAFETY=1
+        _SILENCE_AMP_DEPRECATION_WARNINGS
+)
+
+target_compile_options(${PROJECT_NAME} PRIVATE /Zc:preprocessor /permissive- /utf-8 /Z7 /W4 /wd4201)
+target_link_options(${PROJECT_NAME} PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF /MAP)
+
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+        CommonLibSSE
+        ${BULLET_LIBRARIES}
+        TBB::tbb
+        spdlog::spdlog
+        Microsoft::DirectXTK
+        minhook
+        d3d11
+        d3dcompiler
+        bcrypt
+        version
+        dbghelp
+        dxgi
+)
+
+# Track ABI headers explicitly when MSVC include scanning is unavailable.
+file(GLOB_RECURSE LOCAL_HEADERS CONFIGURE_DEPENDS src/*.h fsmp-abi/*.h)
+set_source_files_properties(${SOURCES} PROPERTIES OBJECT_DEPENDS "${LOCAL_HEADERS}")
+
+# Optional offline tests
+option(BANNER_PHYSICS_BUILD_TESTS "Build Banner Physics offline tests" OFF)
+
+if(BANNER_PHYSICS_BUILD_TESTS)
+    add_executable(BannerBridgeTest test-bridge.cpp)
+    add_executable(BannerAddressLibraryTest test-address-library.cpp)
+
+    foreach(TEST_TARGET IN ITEMS BannerBridgeTest BannerAddressLibraryTest)
+        target_compile_features(${TEST_TARGET} PRIVATE cxx_std_23)
+        target_precompile_headers(${TEST_TARGET} PRIVATE src/PCH.h)
+        target_include_directories(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},INCLUDE_DIRECTORIES>)
+        target_compile_definitions(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},COMPILE_DEFINITIONS>)
+        target_compile_options(${TEST_TARGET} PRIVATE /UNDEBUG /Zc:preprocessor /utf-8)
+        target_link_libraries(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},LINK_LIBRARIES>)
+    endforeach()
+
+    target_compile_definitions(BannerAddressLibraryTest PRIVATE ENABLE_COMMONLIBSSE_TESTING=1)
+    set_source_files_properties(test-bridge.cpp test-address-library.cpp PROPERTIES OBJECT_DEPENDS "${LOCAL_HEADERS}")
+endif()
+
+# Deployment
+if(OUTPUT_FOLDER)
+    set(DLL_FOLDER "${OUTPUT_FOLDER}/SKSE/Plugins")
+    message(STATUS "SKSE plugin output folder: ${DLL_FOLDER}")
+
+    add_custom_command(
+        TARGET ${PROJECT_NAME}
+        POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${DLL_FOLDER}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:${PROJECT_NAME}>" "${DLL_FOLDER}/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+        VERBATIM
+    )
+
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_custom_command(
+            TARGET ${PROJECT_NAME}
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "${DLL_FOLDER}/$<TARGET_PDB_FILE_NAME:${PROJECT_NAME}>"
+            VERBATIM
+        )
+    endif()
+endif()
