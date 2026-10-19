@@ -26,11 +26,12 @@ namespace BP {
 
     bool loading() {
         auto* world = hdt::SkyrimPhysicsWorld::get();
-        return *reinterpret_cast<const bool*>(reinterpret_cast<const std::byte*>(world) + 1001);
+        return *reinterpret_cast<const bool*>(reinterpret_cast<const std::byte*>(world) +
+                                              Offsets::selected->loadingFlag);
     }
 
     bool isSpring(const hdt::BoneScaleConstraint* c) {
-        return c && *reinterpret_cast<const uintptr_t*>(c) == address(Offsets::springVtable);
+        return c && *reinterpret_cast<const uintptr_t*>(c) == address(Offsets::selected->springVtable);
     }
 
     static std::string hashFile(const std::filesystem::path& path) {
@@ -86,13 +87,16 @@ namespace BP {
             return false;
         }
         const auto hash = hashFile(std::filesystem::path(path.data()));
-        if (hash != Offsets::sha256) {
-            logger::critical("Unsupported FSMP binary SHA256 {}. Expected {}. No hooks installed.", hash,
-                             Offsets::sha256);
-            return false;
+        if (!Offsets::Select(hash)) {
+            std::string reason;
+            if (!Offsets::Detect(module, path.data(), &reason)) {
+                logger::critical("Unsupported FSMP binary: {}. No hooks installed.", reason);
+                return false;
+            }
+            logger::info("FSMP compatibility resolved from local symbols.");
         }
         base = reinterpret_cast<uintptr_t>(module);
-        for (const auto& signature : Offsets::signatures) {
+        for (const auto& signature : Offsets::selected->signatures) {
             if (std::memcmp(reinterpret_cast<const void*>(address(signature.rva)), signature.bytes, 16)) {
                 logger::critical("FSMP entry 0x{:x} differs in memory; Banner Physics disabled", signature.rva);
                 base = 0;
@@ -107,7 +111,7 @@ namespace BP {
     static void (*originalWind)(hdt::SkinnedMeshWorld*, float) = nullptr;
 
     static void update(hdt::SkyrimPhysicsWorld* world, float dt) {
-        auto* actors = pointer<hdt::ActorManager* (*)()>(Offsets::actors)();
+        auto* actors = pointer<hdt::ActorManager* (*)()>(Offsets::selected->actors)();
         const int old = actors->activeSkeletons;
         const bool admit = old == 0 && hdt::BannerRuntime::GetSingleton().HasBanners();
         if (admit) {
@@ -201,9 +205,10 @@ namespace BP {
         };
 
         Hook hooks[] = {
-            {Offsets::doUpdate, reinterpret_cast<void*>(&update), reinterpret_cast<void**>(&originalUpdate)},
-            {Offsets::springInfo, reinterpret_cast<void*>(&spring), reinterpret_cast<void**>(&originalSpring)},
-            {Offsets::wind, reinterpret_cast<void*>(&wind), reinterpret_cast<void**>(&originalWind)}};
+            {Offsets::selected->doUpdate, reinterpret_cast<void*>(&update), reinterpret_cast<void**>(&originalUpdate)},
+            {Offsets::selected->springInfo, reinterpret_cast<void*>(&spring),
+             reinterpret_cast<void**>(&originalSpring)},
+            {Offsets::selected->wind, reinterpret_cast<void*>(&wind), reinterpret_cast<void**>(&originalWind)}};
         unsigned created = 0;
         for (auto& hook : hooks) {
             if (MH_CreateHook(reinterpret_cast<void*>(address(hook.rva)), hook.target, hook.original) != MH_OK) {
@@ -232,12 +237,12 @@ namespace BP {
         static SyncSink before, after;
         after.after = true;
         static ShutdownSink Shutdown;
-        pointer<Events::Sources::FrameEventSource* (*)()>(Offsets::frameSource)()->PrependEventSink(&frame);
-        auto* sync = pointer<Events::Sources::FrameSyncEventSource* (*)()>(Offsets::syncSource)();
+        pointer<Events::Sources::FrameEventSource* (*)()>(Offsets::selected->frameSource)()->PrependEventSink(&frame);
+        auto* sync = pointer<Events::Sources::FrameSyncEventSource* (*)()>(Offsets::selected->syncSource)();
         sync->PrependEventSink(&before);
         sync->AddEventSink(&after);
-        pointer<Events::Sources::ShutdownEventEventSource* (*)()>(Offsets::shutdownSource)()->PrependEventSink(
-            &Shutdown);
+        pointer<Events::Sources::ShutdownEventEventSource* (*)()>(Offsets::selected->shutdownSource)()
+            ->PrependEventSink(&Shutdown);
         connected = true;
         logger::info("FSMP integration ready.");
         return true;
@@ -252,20 +257,20 @@ namespace hdt {
     static_assert(sizeof(StiffSpringConstraint) == 144);
 
     SkyrimPhysicsWorld* SkyrimPhysicsWorld::get() {
-        return BP::pointer<SkyrimPhysicsWorld* (*)()>(BP::Offsets::world)();
+        return BP::pointer<SkyrimPhysicsWorld* (*)()>(BP::Offsets::selected->world)();
     }
 
     std::unique_lock<std::mutex> SkyrimPhysicsWorld::lockSimulation() {
-        auto fn = BP::member<decltype(&SkyrimPhysicsWorld::lockSimulation)>(BP::Offsets::lock);
+        auto fn = BP::member<decltype(&SkyrimPhysicsWorld::lockSimulation)>(BP::Offsets::selected->lock);
         return (this->*fn)();
     }
 
     DefaultBBP* DefaultBBP::instance() {
-        return BP::pointer<DefaultBBP* (*)()>(BP::Offsets::bbp)();
+        return BP::pointer<DefaultBBP* (*)()>(BP::Offsets::selected->bbp)();
     }
 
     DefaultBBP::PhysicsFile_t DefaultBBP::scanBBP(RE::NiNode* root) {
-        auto fn = BP::member<decltype(&DefaultBBP::scanBBP)>(BP::Offsets::scan);
+        auto fn = BP::member<decltype(&DefaultBBP::scanBBP)>(BP::Offsets::selected->scan);
         return (this->*fn)(root);
     }
 
@@ -274,12 +279,12 @@ namespace hdt {
     RE::BSTSmartPointer<SkyrimSystem> SkyrimSystemCreator::createOrUpdateSystem(
         RE::NiNode* skeleton, RE::NiAVObject* model, DefaultBBP::PhysicsFile_t* file,
         std::unordered_map<RE::BSFixedString, RE::BSFixedString>&& rename, SkyrimSystem* old) {
-        auto fn = BP::member<decltype(&SkyrimSystemCreator::createOrUpdateSystem)>(BP::Offsets::create);
+        auto fn = BP::member<decltype(&SkyrimSystemCreator::createOrUpdateSystem)>(BP::Offsets::selected->create);
         return (this->*fn)(skeleton, model, file, std::move(rename), old);
     }
 
     SkinnedMeshBone* SkyrimSystem::findBone(const RE::BSFixedString& name) {
-        auto fn = BP::member<decltype(&SkyrimSystem::findBone)>(BP::Offsets::findBone);
+        auto fn = BP::member<decltype(&SkyrimSystem::findBone)>(BP::Offsets::selected->findBone);
         return (this->*fn)(name);
     }
 }

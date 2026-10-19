@@ -129,7 +129,7 @@ set_source_files_properties(${SOURCES} PROPERTIES OBJECT_DEPENDS "${LOCAL_HEADER
 option(BANNER_PHYSICS_BUILD_TESTS "Build Banner Physics offline tests" OFF)
 
 if(BANNER_PHYSICS_BUILD_TESTS)
-    add_executable(BannerBridgeTest test-bridge.cpp)
+    add_executable(BannerBridgeTest test-bridge.cpp src/Utility.cpp)
     add_executable(BannerAddressLibraryTest test-address-library.cpp)
 
     foreach(TEST_TARGET IN ITEMS BannerBridgeTest BannerAddressLibraryTest)
