@@ -20,6 +20,7 @@ bool SetupLog();
 namespace BP::Settings {
     inline bool bEnableDegradation = true;
     inline bool bEnableMagicDegradation = true;
+    inline bool bEnableEnchantedBurnEffect = true;
     inline std::vector<std::string> increaseDegradationKeywords{"MagicDamageFire", "MagicDamageShock"};
     inline std::vector<std::string> triggerBurnKeywords{"MagicDamageFire", "MagicDamageShock"};
     inline bool bEnableInterior = true;
@@ -29,6 +30,7 @@ namespace BP::Settings {
     struct Values {
         bool degradation = true;
         bool magicDegradation = true;
+        bool enchantedBurnEffect = true;
         std::vector<std::string> increaseDegradationKeywords{"MagicDamageFire", "MagicDamageShock"};
         std::vector<std::string> triggerBurnKeywords{"MagicDamageFire", "MagicDamageShock"};
         bool interior = true;
@@ -86,6 +88,10 @@ namespace BP::Settings {
                     if (setting == "0" || setting == "1") {
                         settings.magicDegradation = setting == "1";
                         magicOverride = true;
+                    }
+                } else if (equal(key, "bEnableEnchantedBurnEffect")) {
+                    if (setting == "0" || setting == "1") {
+                        settings.enchantedBurnEffect = setting == "1";
                     }
                 } else if (equal(key, "sIncreaseDegradation") || equal(key, "sTriggerBurnEffect")) {
                     auto& keywords = equal(key, "sIncreaseDegradation") ? settings.increaseDegradationKeywords
@@ -153,11 +159,11 @@ namespace BP::Settings {
 }
 
 namespace BP {
-    inline constexpr REL::Version runtimeAE{1, 6, 1170, 0};
+    inline constexpr REL::Version runtimeSE{1, 5, 97, 0};
     inline constexpr REL::Version runtimeCurrent{1, 7, 104, 0};
 
     inline constexpr bool supportsRuntime(REL::Version version) {
-        return version == runtimeAE || version == runtimeCurrent;
+        return version == runtimeSE || (version.major() == 1 && version.minor() == 6) || version == runtimeCurrent;
     }
 }
 
@@ -473,6 +479,32 @@ namespace BP {
 }
 
 namespace hdt {
+
+    template <class Bones> unsigned BannerGridStep(const Bones& bones) {
+        bool full = true;
+        for (unsigned i = 0; i < 75; ++i) {
+            full &= bones[i] != nullptr;
+        }
+        if (full) {
+            return 1;
+        }
+        for (unsigned row = 0; row < 15; row += 2) {
+            for (unsigned col = 0; col < 5; col += 2) {
+                if (!bones[row * 5 + col]) {
+                    return 0;
+                }
+            }
+        }
+        return 2;
+    }
+
+    inline std::array<unsigned, 3> BannerGridFace(unsigned face, unsigned step) {
+        const unsigned columns = 4 / step, cell = face / 2;
+        const unsigned a = (cell / columns) * step * 5 + (cell % columns) * step;
+        return face % 2 ? std::array<unsigned, 3>{a + step, a + 6 * step, a + 5 * step}
+                        : std::array<unsigned, 3>{a, a + step, a + 5 * step};
+    }
+
     struct BannerBounds {
         btVector3 low{BT_LARGE_FLOAT, BT_LARGE_FLOAT, BT_LARGE_FLOAT},
             high{-BT_LARGE_FLOAT, -BT_LARGE_FLOAT, -BT_LARGE_FLOAT};
@@ -672,7 +704,12 @@ namespace hdt {
     }
 
     inline unsigned BannerFireWidth(float intensity) {
-        return intensity >= .85f ? 5u : intensity >= .5f ? 4u : intensity >= .2f ? 3u : 2u;
+        return intensity >= .85f ? 8u : intensity >= .5f ? 6u : intensity >= .2f ? 3u : 2u;
+    }
+
+    inline std::array<float, 3> BannerFireTint(float intensity) {
+        const float heat = std::isfinite(intensity) ? std::clamp(intensity, 0.f, 1.f) : 0.f;
+        return {1.f, .025f + .975f * heat * heat, .01f + .99f * heat * heat * heat};
     }
 
     inline float BannerFireIntensity(float heat) {
@@ -703,4 +740,4 @@ namespace hdt {
     }
 }
 
-#endif // UTILITY_H
+#endif

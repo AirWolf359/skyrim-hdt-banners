@@ -39,7 +39,6 @@ namespace hdt {
  float4 masks=damage.SampleLevel(linearClamp,uv,0);
  float mask=(dirtStage & 512u)?masks.b:masks.r;
  if(dirtStage & 256u){
-   // Approximate distance to the exposed edge; the outer fabric is cooler.
    float rimWidth=max(1.0,float((dirtStage>>16)&255u));
    float fabric=mask*color.a,nearest=rimWidth+1,edge=0;
    [loop]for(uint radius=1;radius<=8;radius++){
@@ -57,19 +56,16 @@ namespace hdt {
    }
    float distance=saturate((nearest-1)/max(rimWidth-1,1));
    float stage=float(dirtStage & 3u)/3;
-   float3 core=lerp(float3(.9764786,.6588235,.1568628),float3(1,.84,.26),stage);
-   float3 orange=float3(.85,.22,.018),red=float3(.30,.012,.001);
-   float3 glow=distance<.45?lerp(core,orange,smoothstep(0,.45,distance)):
-                                   lerp(orange,red,smoothstep(.45,1,distance));
-   glow*=edge;
+   float3 core=lerp(float3(1,.72,.12),float3(1,.88,.22),stage);
+   float3 orange=float3(1,.19,.008),red=float3(.38,.009,.0005);
+   float3 glow=distance<.6?lerp(core,orange,smoothstep(0,.6,distance)):
+                                  lerp(orange,red,smoothstep(.6,1,distance));
+   glow*=edge*(1-.75*smoothstep(.65,1,distance));
    if(encodeSRGB)glow=encode(glow);
    output[id.xy]=float4(glow,1);return;
  }
- // A subtle shaded fringe softens the cut while alpha testing keeps fabric opaque.
  float fringe=smoothstep(.28,.55,mask)*(1-smoothstep(.82,1,mask));
  if(encodeSRGB)color.rgb=encode(color.rgb);color.rgb*=1-.10*fringe;
- // Pigment stays visible under sparse, uneven grime. Alpha is never changed by dirt.
- // This runs only during the existing one-time cached composition, not while rendering.
  if(dirtStage & 3u){float dirt=min(dirtStage & 3u,3u)*.14*smoothstep(.15,.7,grime(uv));
  color.rgb*=1-dirt*float3(.72,.91,1.18);}
  if(dirtStage & 512u){
@@ -582,4 +578,4 @@ namespace hdt {
     }
 }
 
-#endif // BANNER_DEGRADATION_H
+#endif

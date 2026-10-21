@@ -164,7 +164,16 @@ namespace hdt {
                                                     capsule)) {
                             const auto identity = reinterpret_cast<std::uintptr_t>(model) ^
                                                   (static_cast<std::uintptr_t>(weapon->GetFormID()) << 32);
-                            capsules.push_back({capsule, identity});
+                            const bool leftHand =
+                                part.item == left &&
+                                (part.item != right || &part == &biped->objects[RE::BIPED_OBJECT::kShield]);
+                            auto* entry = actor->GetEquippedEntryData(leftHand);
+                            auto* enchantment = entry ? entry->GetEnchantment() : nullptr;
+                            const auto charge = entry ? entry->GetEnchantmentCharge() : std::nullopt;
+                            if (charge && (!std::isfinite(*charge) || *charge <= 0)) {
+                                enchantment = nullptr;
+                            }
+                            capsules.push_back({capsule, identity, enchantment});
                         }
                     }
                 }
@@ -197,6 +206,7 @@ namespace hdt {
                 }
             }
             for (auto& banner : m_bannerInstances) {
+                const unsigned gridStep = BannerGridStep(banner.bones);
                 const auto owner = banner.reference.get();
                 if (!owner) {
                     continue;
@@ -231,7 +241,8 @@ namespace hdt {
                     continue;
                 }
                 auto resolve = [&](const std::array<size_t, 3>& indices, const BannerActorCapsule& before,
-                                   const BannerActorCapsule& current, float elapsed, bool releaseSlidingContact) {
+                                   const BannerActorCapsule& current, float elapsed, bool releaseSlidingContact,
+                                   RE::EnchantmentItem* enchantment) {
                     if (!bones[indices[0]] || !bones[indices[1]] || !bones[indices[2]]) {
                         return;
                     }
@@ -277,10 +288,16 @@ namespace hdt {
                                         }
                                     }
                                 }
-                                const auto beforeHits = state.hits;
+                                const bool freshHit =
+                                    state.lastHitActor != ref->GetFormID() || state.lastHitSwing != attackCycle.serial;
                                 RegisterBannerWeaponHit(state.hits, state.lastHitActor, state.lastHitSwing,
                                                         ref->GetFormID(), attackCycle.serial);
-                                if (state.hits != beforeHits) {
+                                if (freshHit) {
+                                    state.lastHitActor = ref->GetFormID();
+                                    state.lastHitSwing = attackCycle.serial;
+                                    if (indices[0] < 75) {
+                                        ApplyBannerEnchantmentHit(enchantment, banner.reference);
+                                    }
                                 }
                             }
                         }
@@ -293,18 +310,22 @@ namespace hdt {
                             BannerActorCanSweep(old->second[i], capsules[i])) {
                             before = old->second[i].capsule;
                         }
-                        for (size_t row = 0; row < 14; ++row) {
-                            for (size_t col = 0; col < 4; ++col) {
-                                const size_t a = row * 5 + col, b = a + 1, c = a + 5, d = c + 1;
-                                resolve({a, b, c}, before, capsules[i].capsule, dt, i < bodyCapsuleCount);
-                                resolve({b, d, c}, before, capsules[i].capsule, dt, i < bodyCapsuleCount);
+                        for (size_t row = 0; row < 14; row += gridStep) {
+                            for (size_t col = 0; col < 4; col += gridStep) {
+                                const size_t a = row * 5 + col, b = a + gridStep, c = a + 5 * gridStep,
+                                             d = c + gridStep;
+                                resolve({a, b, c}, before, capsules[i].capsule, dt, i < bodyCapsuleCount,
+                                        capsules[i].enchantment);
+                                resolve({b, d, c}, before, capsules[i].capsule, dt, i < bodyCapsuleCount,
+                                        capsules[i].enchantment);
                             }
                         }
                         for (size_t index = 75; index < 88; ++index) {
                             if (!bones[index] || bones[index]->m_rig.isStaticOrKinematicObject()) {
                                 continue;
                             }
-                            resolve({index, index, index}, before, capsules[i].capsule, dt, i < bodyCapsuleCount);
+                            resolve({index, index, index}, before, capsules[i].capsule, dt, i < bodyCapsuleCount,
+                                    capsules[i].enchantment);
                         }
                     }
                 }
@@ -412,21 +433,23 @@ namespace hdt {
 
     void BannerRuntime::CollideBannerFaces(BannerInstance& instance, RE::bhkWorld* world,
                                            const std::array<btVector3, 88>& starts, int& queryBudget) {
+        const unsigned gridStep = BannerGridStep(instance.bones);
+        const unsigned faceCount = 112 / (gridStep * gridStep);
+        const unsigned firstFace = 16 / (gridStep * gridStep);
         std::array<SkinnedMeshBone*, 75> bones{};
         std::array<btVector3, 75> positions{}, velocities{};
         for (size_t i = 0; i < 75; ++i) {
             bones[i] = instance.bones[i];
             if (!bones[i]) {
-                return;
+                continue;
             }
             positions[i] = bones[i]->m_rig.getWorldTransform().getOrigin();
             velocities[i] = bones[i]->m_rig.getLinearVelocity();
         }
         const float scale = instance.root->world.scale, margin = std::max(.25f, .75f * scale);
         const float dt = std::clamp(RE::GetSecondsSinceLastFrame(), 0.f, .1f);
-        auto indices = [](unsigned face) {
-            const unsigned cell = face / 2, a = (cell / 4) * 5 + cell % 4;
-            return face % 2 ? std::array<unsigned, 3>{a + 1, a + 6, a + 5} : std::array<unsigned, 3>{a, a + 1, a + 5};
+        auto indices = [gridStep](unsigned face) {
+            return BannerGridFace(face, gridStep);
         };
         auto present = [&](const auto& ids, const auto& weights) {
             return !instance.damageApplied ||
@@ -466,7 +489,7 @@ namespace hdt {
                 }
             }
         };
-        for (unsigned face = 16; face < 112; ++face) {
+        for (unsigned face = firstFace; face < faceCount; ++face) {
             auto& support = instance.faceSupports[face];
             support.wall.age += dt;
             if (support.wall.active) {
@@ -476,10 +499,10 @@ namespace hdt {
         const btVector3 samples[]{{1.f / 3, 1.f / 3, 1.f / 3}, {.5f, .5f, 0}, {0, .5f, .5f}, {.5f, 0, .5f}};
         int queries = 0;
         const unsigned begin = instance.faceProbeCursor;
-        for (unsigned scan = 0; scan < 112 && queries < 48 && queryBudget > 0; ++scan) {
-            const unsigned sequence = begin + scan, face = sequence % 112;
+        for (unsigned scan = 0; scan < faceCount && queries < 48 && queryBudget > 0; ++scan) {
+            const unsigned sequence = begin + scan, face = sequence % faceCount;
             instance.faceProbeCursor = sequence + 1;
-            if (face < 16) {
+            if (face < firstFace) {
                 continue;
             }
             auto& support = instance.faceSupports[face];
@@ -487,7 +510,7 @@ namespace hdt {
             if (support.wall.active && support.wall.age < (.20f + .10f * float((face * 37) % 101) / 100.f)) {
                 continue;
             }
-            auto weights = support.wall.active ? support.weights : samples[(sequence / 112) % 4];
+            auto weights = support.wall.active ? support.weights : samples[(sequence / faceCount) % 4];
             if (!present(ids, weights)) {
                 continue;
             }
@@ -502,7 +525,7 @@ namespace hdt {
                 continue;
             }
             const auto motion = point - before;
-            const bool periodicRecovery = !support.wall.active && BannerFaceRecoveryVisit(sequence);
+            const bool periodicRecovery = !support.wall.active && BannerFaceRecoveryVisit(sequence, faceCount);
             btVector3 rayStart, end;
             bool twoSided = false;
             if (support.wall.active) {
@@ -586,14 +609,14 @@ namespace hdt {
             }
         }
         for (int pass = 0; pass < 3; ++pass) {
-            for (unsigned face = 16; face < 112; ++face) {
+            for (unsigned face = firstFace; face < faceCount; ++face) {
                 if (instance.faceSupports[face].wall.active) {
                     resolve(face);
                 }
             }
             for (size_t i = 10; i < 75; ++i) {
                 auto& wall = instance.wallSupports[i];
-                if (!wall.active || bones[i]->m_rig.isStaticOrKinematicObject()) {
+                if (!bones[i] || !wall.active || bones[i]->m_rig.isStaticOrKinematicObject()) {
                     continue;
                 }
                 if (!BannerWallSupportValid(positions[i], wall, margin, scale)) {
@@ -606,7 +629,7 @@ namespace hdt {
             }
         }
         for (size_t i = 0; i < 75; ++i) {
-            if (!bones[i]->m_rig.isStaticOrKinematicObject()) {
+            if (bones[i] && !bones[i]->m_rig.isStaticOrKinematicObject()) {
                 auto tr = bones[i]->m_rig.getWorldTransform();
                 tr.setOrigin(positions[i]);
                 bones[i]->m_rig.setWorldTransform(tr);

@@ -171,12 +171,24 @@ namespace hdt {
         return std::clamp(mag * cast, .2f, 5.f);
     }
 
-    inline bool BannerMagicDamageHit(uint8_t& hits, float& cooldown) {
-        if (cooldown > 0 || hits >= 20) {
+    inline bool BannerMagicDamageHit(uint8_t& hits, float& cooldown, float magnitude = 0, bool continuous = false,
+                                     bool devastating = false) {
+        devastating = devastating || (std::isfinite(magnitude) && magnitude >= 100.f);
+        if ((cooldown > 0 && !devastating) || hits >= 20) {
             return false;
         }
-        ++hits;
-        cooldown = 1.f;
+        if (devastating) {
+            hits = 20;
+            cooldown = 1.f;
+            return true;
+        }
+        const float rate = std::isfinite(magnitude) ? std::clamp(magnitude / 25.f, 1.f, 4.f) : 1.f;
+        const unsigned amount = continuous ? 1u
+                                : std::isfinite(magnitude)
+                                    ? unsigned(std::round(std::clamp(magnitude / 8.f, 1.f, 20.f)))
+                                    : 1u;
+        hits = uint8_t(std::min(unsigned(hits) + amount, 20u));
+        cooldown = continuous ? 1.f / rate : 1.f;
         return true;
     }
 
@@ -192,4 +204,4 @@ namespace hdt {
     }
 }
 
-#endif // BANNER_FORCES_H
+#endif

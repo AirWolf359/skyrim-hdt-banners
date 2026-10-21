@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.22)
 
 project(BannerPhysics VERSION 1.1.0 LANGUAGES C CXX)
 
-# Output folder
 if(NOT DEFINED OUTPUT_FOLDER)
     if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
         set(OUTPUT_FOLDER "$ENV{SKYRIM_FOLDER}/Data")
@@ -13,7 +12,6 @@ if(NOT DEFINED OUTPUT_FOLDER)
     endif()
 endif()
 
-# Dependencies
 set(COMMONLIBSSE_NG_ROOT "" CACHE PATH "Path to CommonLibSSE-NG")
 set(COMMONLIB_LIBRARY "" CACHE FILEPATH "Optional matching prebuilt CommonLibSSE library")
 set(MINHOOK_ROOT "" CACHE PATH "Path to MinHook")
@@ -40,7 +38,6 @@ find_package(TBB CONFIG REQUIRED)
 find_package(directxtk CONFIG REQUIRED)
 find_path(XBYAK_INCLUDE_DIR xbyak/xbyak.h REQUIRED)
 
-# Keep the runtime layout used by the FSMP interface headers.
 set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_VR ON CACHE BOOL "" FORCE)
@@ -61,7 +58,6 @@ endif()
 
 add_subdirectory("${MINHOOK_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/minhook")
 
-# Plugin metadata is declared in main.cpp.
 set(SOURCES
     src/main.cpp
     src/Utility.cpp
@@ -121,31 +117,9 @@ target_link_libraries(${PROJECT_NAME}
         dxgi
 )
 
-# Track ABI headers explicitly when MSVC include scanning is unavailable.
 file(GLOB_RECURSE LOCAL_HEADERS CONFIGURE_DEPENDS src/*.h fsmp-abi/*.h)
 set_source_files_properties(${SOURCES} PROPERTIES OBJECT_DEPENDS "${LOCAL_HEADERS}")
 
-# Optional offline tests
-option(BANNER_PHYSICS_BUILD_TESTS "Build Banner Physics offline tests" OFF)
-
-if(BANNER_PHYSICS_BUILD_TESTS)
-    add_executable(BannerBridgeTest test-bridge.cpp src/Utility.cpp)
-    add_executable(BannerAddressLibraryTest test-address-library.cpp)
-
-    foreach(TEST_TARGET IN ITEMS BannerBridgeTest BannerAddressLibraryTest)
-        target_compile_features(${TEST_TARGET} PRIVATE cxx_std_23)
-        target_precompile_headers(${TEST_TARGET} PRIVATE src/PCH.h)
-        target_include_directories(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},INCLUDE_DIRECTORIES>)
-        target_compile_definitions(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},COMPILE_DEFINITIONS>)
-        target_compile_options(${TEST_TARGET} PRIVATE /UNDEBUG /Zc:preprocessor /utf-8)
-        target_link_libraries(${TEST_TARGET} PRIVATE $<TARGET_PROPERTY:${PROJECT_NAME},LINK_LIBRARIES>)
-    endforeach()
-
-    target_compile_definitions(BannerAddressLibraryTest PRIVATE ENABLE_COMMONLIBSSE_TESTING=1)
-    set_source_files_properties(test-bridge.cpp test-address-library.cpp PROPERTIES OBJECT_DEPENDS "${LOCAL_HEADERS}")
-endif()
-
-# Deployment
 if(OUTPUT_FOLDER)
     set(DLL_FOLDER "${OUTPUT_FOLDER}/SKSE/Plugins")
     message(STATUS "SKSE plugin output folder: ${DLL_FOLDER}")

@@ -1,6 +1,58 @@
 #include "BannerRuntime.h"
 #include "FSMPBridge.h"
 
+namespace {
+    using BannerVisibilityList = std::vector<std::pair<RE::ObjectRefHandle, RE::NiPointer<RE::NiNode>>>;
+
+    void UpdateBannerVisibility(BannerVisibilityList banners) {
+        SKSE::GetTaskInterface()->AddTask([banners = std::move(banners)] {
+            struct Entry {
+                RE::NiPointer<RE::BSPortalGraph> graph;
+                RE::NiPointer<RE::NiAVObject> root;
+            };
+            static std::vector<Entry> entries;
+            const auto graphFor = [](RE::TESObjectREFR* ref) -> RE::BSPortalGraph* {
+                auto* cell = ref ? ref->GetParentCell() : nullptr;
+                auto* loaded = cell && cell->IsInteriorCell() ? cell->GetRuntimeData().loadedData : nullptr;
+                return loaded ? loaded->portalGraph.get() : nullptr;
+            };
+            for (auto it = entries.begin(); it != entries.end();) {
+                const bool active = std::any_of(banners.begin(), banners.end(), [&](const auto& banner) {
+                    auto ref = banner.first.get();
+                    return ref && !ref->IsDisabled() && ref->Get3D() == banner.second.get() &&
+                           banner.second.get() == it->root.get() && graphFor(ref.get()) == it->graph.get();
+                });
+                if (active) {
+                    ++it;
+                    continue;
+                }
+                auto& children = it->graph->alwaysRenderChildren;
+                const auto found = std::find(children.begin(), children.end(), it->root);
+                if (found != children.end()) {
+                    children.erase(found);
+                }
+                it = entries.erase(it);
+            }
+            for (const auto& [handle, root] : banners) {
+                auto ref = handle.get();
+                if (!ref || ref->IsDisabled() || ref->Get3D() != root.get()) {
+                    continue;
+                }
+                auto* graph = graphFor(ref.get());
+                if (!graph) {
+                    continue;
+                }
+                auto& children = graph->alwaysRenderChildren;
+                RE::NiPointer<RE::NiAVObject> object(root.get());
+                if (std::find(children.begin(), children.end(), object) == children.end()) {
+                    children.push_back(object);
+                    entries.push_back({RE::NiPointer<RE::BSPortalGraph>(graph), object});
+                }
+            }
+        });
+    }
+}
+
 namespace hdt {
     BannerRuntime& BannerRuntime::GetSingleton() {
         static BannerRuntime runtime;
@@ -49,7 +101,9 @@ namespace hdt {
 
     void BannerRuntime::BeforeFrame() {
         auto* world = SkyrimPhysicsWorld::get();
-        world->m_tasks.wait();
+        {
+            auto lock = world->lockSimulation();
+        }
         m_loading = BP::loading();
         BP::BeginBannerWorldQueries();
         SyncAllBanners();
@@ -99,8 +153,11 @@ namespace hdt {
     }
 
     void BannerRuntime::Shutdown() {
+        UpdateBannerVisibility({});
         auto* world = SkyrimPhysicsWorld::get();
-        world->m_tasks.wait();
+        {
+            auto lock = world->lockSimulation();
+        }
         for (auto& [id, state] : m_bannerDamage) {
             RestoreBannerDamage(state);
         }
@@ -110,6 +167,8 @@ namespace hdt {
             RemoveSkinnedMeshSystem(instance.system.get());
         }
         m_bannerMagic.clear();
+        m_areaHazards.clear();
+        m_hazardScanAge = .5f;
         m_springs.clear();
         m_fabric.clear();
         m_bannerInstances.clear();
@@ -122,6 +181,7 @@ namespace hdt {
         m_damageGlowModels.clear();
         std::lock_guard guard(m_damageEventLock);
         m_detachedBannerReferences.clear();
+        m_areaCasts.clear();
         m_damageResetRequested = false;
     }
 
@@ -312,8 +372,22 @@ namespace hdt {
                                                  : "BP_RopeBone_" + std::to_string(i - 75);
                         cached.bones[i] = cached.system->findBone(name.c_str());
                     }
+                    if (!BannerGridStep(cached.bones)) {
+                        logger::error("Unsupported banner cloth grid; skipped");
+                        m_bannerInstances.pop_back();
+                    }
                 }
             }
+        }
+        static float visibilityAge = 0;
+        visibilityAge += std::clamp(RE::GetSecondsSinceLastFrame(), 0.f, .1f);
+        if (visibilityAge >= 1.f && !m_loading && player && ui && !ui->GameIsPaused()) {
+            visibilityAge = 0;
+            BannerVisibilityList banners;
+            for (const auto& instance : m_bannerInstances) {
+                banners.emplace_back(instance.reference, instance.root);
+            }
+            UpdateBannerVisibility(std::move(banners));
         }
         std::vector<RE::ProjectileHandle> flying;
         if (!m_bannerInstances.empty()) {

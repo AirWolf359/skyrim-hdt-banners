@@ -33,6 +33,7 @@ namespace hdt {
             }
         }
         std::unordered_map<RE::FormID, BannerArrowState> next;
+        const unsigned gridStep = BannerGridStep(cachedBones);
         std::array<SkinnedMeshBone*, 75> grid{};
         std::copy_n(cachedBones.begin(), 75, grid.begin());
         btVector3 minimum(BT_LARGE_FLOAT, BT_LARGE_FLOAT, BT_LARGE_FLOAT),
@@ -183,10 +184,11 @@ namespace hdt {
             SkinnedMeshBone* hitBones[3]{};
             float hitWeights[3]{};
             if (!state.hit && delta.length2() > 0.001f) {
-                for (int r = 0; r < 14; ++r) {
-                    for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 14; r += gridStep) {
+                    for (int c = 0; c < 4; c += gridStep) {
                         SkinnedMeshBone* quad[4]{};
-                        const int rows[4]{r, r, r + 1, r + 1}, cols[4]{c, c + 1, c, c + 1};
+                        const int rows[4]{r, r, r + int(gridStep), r + int(gridStep)},
+                            cols[4]{c, c + int(gridStep), c, c + int(gridStep)};
                         for (int i = 0; i < 4; ++i) {
                             quad[i] = grid[rows[i] * 5 + cols[i]];
                         }
@@ -302,6 +304,9 @@ namespace hdt {
                     state.hit = true;
                     state.ageAfterHit = 0;
                     state.piercedPoint = contact;
+                    if (!shaftOnly) {
+                        ApplyBannerEnchantmentHit(arrow->GetArrowRuntimeData().enchantItem, m_bannerReference);
+                    }
                     state.direction = delta.normalized();
                     state.weights = btVector3(hitWeights[0], hitWeights[1], hitWeights[2]);
                     for (size_t j = 0; j < 3; ++j) {
@@ -373,8 +378,7 @@ namespace hdt {
                             foundSurface =
                                 BannerArrowBackingTarget(bestSurface, bestNormal, state.piercedPoint, incoming,
                                                          1.25f * m_bannerRoot->world.scale, target);
-                        }
-                        else if (solidImpact) {
+                        } else if (solidImpact) {
                             foundSurface =
                                 BannerArrowBackingTarget(impactPoint, -incoming, state.piercedPoint, incoming,
                                                          1.25f * m_bannerRoot->world.scale, target);
@@ -497,7 +501,8 @@ namespace hdt {
             }
             if (spell) {
                 for (auto* effect : spell->effects) {
-                    if (effect && effect->baseEffect && effect->baseEffect->data.projectileBase == projectile &&
+                    if (effect && effect->baseEffect &&
+                        (!projectile || effect->baseEffect->data.projectileBase == projectile) &&
                         matches(effect->baseEffect)) {
                         return true;
                     }
@@ -529,8 +534,11 @@ namespace hdt {
             return it == tiers.end() ? 0 : it->second;
         }
 
-        float matchingMagnitude(RE::MagicItem* spell, RE::EffectSetting* setting, RE::BGSProjectile* projectile) {
+        float matchingMagnitude(RE::MagicItem* spell, RE::EffectSetting* setting, RE::BGSProjectile* projectile,
+                                bool& master) {
             float result = 0;
+            master = setting && setting->GetMagickSkill() == RE::ActorValue::kDestruction &&
+                     setting->GetMinimumSkillLevel() >= 100;
             if (!spell) {
                 return result;
             }
@@ -538,6 +546,8 @@ namespace hdt {
                 if (effect && effect->baseEffect &&
                     (setting ? effect->baseEffect == setting : effect->baseEffect->data.projectileBase == projectile)) {
                     const float magnitude = effect->GetMagnitude();
+                    master = master || (effect->baseEffect->GetMagickSkill() == RE::ActorValue::kDestruction &&
+                                        effect->baseEffect->GetMinimumSkillLevel() >= 100);
                     if (std::isfinite(magnitude)) {
                         result = std::max(result, std::abs(magnitude));
                     }
@@ -547,10 +557,74 @@ namespace hdt {
         }
     }
 
+    void BannerRuntime::ApplyBannerEnchantmentHit(RE::EnchantmentItem* enchantment, RE::ObjectRefHandle reference) {
+        if (!enchantment || !BP::Settings::bEnableDegradation) {
+            return;
+        }
+        const bool damage =
+            BP::Settings::bEnableMagicDegradation &&
+            MagicMatchesKeywords(enchantment, nullptr, nullptr, BP::Settings::increaseDegradationKeywords);
+        const bool heat = BP::Settings::bEnableEnchantedBurnEffect &&
+                          MagicMatchesKeywords(enchantment, nullptr, nullptr, BP::Settings::triggerBurnKeywords);
+        auto ref = reference.get();
+        auto* object = ref ? ref->Get3D() : nullptr;
+        auto* root = object ? object->AsNode() : nullptr;
+        auto* manifest = root ? FindBannerStringData(root, "BP_BannerDamageShapes") : nullptr;
+        if ((!damage && !heat) || !manifest || !manifest->value || !*manifest->value) {
+            return;
+        }
+        auto& state = m_bannerDamage[ref->GetFormID()];
+        state.reference = reference;
+        state.cell = ref->GetParentCell() ? ref->GetParentCell()->GetFormID() : 0;
+        if (state.coverage[0].empty()) {
+            for (unsigned stage = 1; stage <= 4; ++stage) {
+                const auto name = "BP_BannerDamageMask" + std::to_string(stage);
+                if (auto* mask = FindBannerStringData(root, name.c_str()); mask && mask->value) {
+                    state.coverage[stage - 1] = mask->value;
+                }
+            }
+        }
+        float magnitude = 0;
+        for (auto* effect : enchantment->effects) {
+            if (effect && effect->baseEffect && std::isfinite(effect->GetMagnitude()) &&
+                MagicMatchesKeywords(nullptr, effect->baseEffect, nullptr, BP::Settings::increaseDegradationKeywords)) {
+                magnitude = std::max(magnitude, std::abs(effect->GetMagnitude()));
+            }
+        }
+        if (damage && BannerMagicDamageHit(state.hits, state.magicDamageCooldown, magnitude) && magnitude >= 100.f) {
+            state.completedStage = 4;
+            state.transitionAge = kBannerWearTransitionSeconds;
+        }
+        if (heat) {
+            state.fireGlowHeat = std::max(state.fireGlowHeat, .5f);
+            state.fireGlowReleaseHeat = state.fireGlowHeat;
+            state.fireGlowCooldownAge = 0;
+        }
+    }
+
+    RE::BSEventNotifyControl BannerRuntime::ProcessEvent(const RE::TESSpellCastEvent* event,
+                                                         RE::BSTEventSource<RE::TESSpellCastEvent>*) {
+        if (event && event->object) {
+            auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(event->spell);
+            if (spell && spell->GetDelivery() == RE::MagicSystem::Delivery::kSelf &&
+                spell->GetCastingType() == RE::MagicSystem::CastingType::kFireAndForget) {
+                std::lock_guard guard(m_damageEventLock);
+                if (m_areaCasts.size() < 64) {
+                    m_areaCasts.emplace_back(event->object->GetHandle(), event->spell);
+                }
+            }
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+
     void BannerRuntime::SyncBannerMagic() {
         auto* ui = RE::UI::GetSingleton();
         if (m_loading || m_bannerInstances.empty()) {
             m_bannerMagic.clear();
+            std::lock_guard guard(m_damageEventLock);
+            m_areaCasts.clear();
+            m_areaHazards.clear();
+            m_hazardScanAge = .5f;
             return;
         }
         if (!ui || ui->GameIsPaused()) {
@@ -585,8 +659,10 @@ namespace hdt {
             RE::FormID id;
             RE::TESObjectCELL* cell;
             btVector3 from, to, direction;
-            float radius, speed;
-            bool continuous, blast, damage, heat;
+            float radius, speed, magnitude;
+            bool continuous, blast, damage, heat, devastating;
+            bool vortex = false;
+            float age = 0;
         };
 
         std::vector<Effect> effects;
@@ -602,7 +678,15 @@ namespace hdt {
                 continue;
             }
             auto& runtime = p->GetProjectileRuntimeData();
-            if (!runtime.spell && !runtime.avEffect) {
+            const auto caster = runtime.shooter.get();
+            auto* actor = caster ? caster->As<RE::Actor>() : nullptr;
+            auto* race = actor ? actor->GetRace() : nullptr;
+            const bool dragon = actor && (actor->HasKeywordString("ActorTypeDragon") ||
+                                          (race && race->HasKeywordString("ActorTypeDragon")));
+            const bool voice =
+                runtime.spell && runtime.spell->GetSpellType() == RE::MagicSystem::SpellType::kVoicePower;
+            const bool dragonBreath = dragon && (voice || base->IsBeam() || base->IsFlamethrower() || base->IsCone());
+            if (!runtime.spell && !runtime.avEffect && !dragonBreath) {
                 continue;
             }
             const auto end = convertNi(p->GetPosition());
@@ -620,16 +704,16 @@ namespace hdt {
             if (tracked) {
                 state = std::move(prior->second);
             }
-            const bool voice =
-                runtime.spell && runtime.spell->GetSpellType() == RE::MagicSystem::SpellType::kVoicePower;
             const unsigned tier = voice ? shoutTier(runtime.spell) : 0;
-            const float magnitude = matchingMagnitude(runtime.spell, runtime.avEffect, base);
+            bool master = false;
+            const float magnitude = matchingMagnitude(runtime.spell, runtime.avEffect, base, master);
+            const bool devastating = dragonBreath || master || tier == 3 || magnitude >= 100.f;
             const float intensity = BannerMagicIntensity(tier, magnitude, runtime.power);
             const bool damages =
                 MagicMatchesKeywords(runtime.spell, runtime.avEffect, base, BP::Settings::increaseDegradationKeywords);
             const bool heat =
                 MagicMatchesKeywords(runtime.spell, runtime.avEffect, base, BP::Settings::triggerBurnKeywords);
-            const bool continuous = !voice && (base->IsBeam() || base->IsFlamethrower());
+            const bool continuous = base->IsBeam() || base->IsFlamethrower() || (dragonBreath && base->IsCone());
             auto direction = convertNi(runtime.linearVelocity);
             if (direction.length2() < .001f) {
                 const float pitch = p->GetAngleX(), yaw = p->GetAngleZ();
@@ -662,8 +746,9 @@ namespace hdt {
             }
             if (continuous) {
                 from = end;
-                const float range =
-                    std::isfinite(base->data.range) ? std::clamp(base->data.range, 64.f, 4096.f) : 1024.f;
+                const float range = std::isfinite(base->data.range) && base->data.range > 0
+                                        ? std::clamp(base->data.range, 64.f, 4096.f)
+                                        : 1024.f;
                 to = from + direction * range;
                 if (base->IsFlamethrower()) {
                     radius = std::max(radius, 32.f);
@@ -673,7 +758,7 @@ namespace hdt {
             if (!fading || (!continuous && (to - from).length2() > .001f)) {
                 effects.push_back({id, p->GetParentCell(), from, to, direction, radius,
                                    BannerMagicImpulseBudget(voice, continuous, base->data.force, dt) * intensity,
-                                   continuous, false, damages, heat});
+                                   magnitude, continuous, false, damages, heat, devastating});
             }
             auto* explosion = runtime.explosion ? runtime.explosion : base->data.explosionType;
             if (explosion && !runtime.impacts.empty()) {
@@ -691,10 +776,12 @@ namespace hdt {
                              {0, 0, 0},
                              std::clamp(r, 24.f, 1024.f),
                              BannerMagicImpulseBudget(false, false, explosion->data.force, dt) * intensity,
+                             magnitude,
                              false,
                              true,
                              damages,
-                             heat});
+                             heat,
+                             devastating});
                     }
                 }
             }
@@ -702,6 +789,115 @@ namespace hdt {
             state.position = p->GetPosition();
             state.livingTime = runtime.livingTime;
             next.emplace(id, std::move(state));
+        }
+        m_hazardScanAge += dt;
+        if (m_hazardScanAge >= .5f) {
+            m_hazardScanAge = 0;
+            m_areaHazards.clear();
+            if (auto* tes = RE::TES::GetSingleton()) {
+                tes->ForEachReference([&](RE::TESObjectREFR* ref) {
+                    if (ref && ref->As<RE::Hazard>() && m_areaHazards.size() < 64) {
+                        m_areaHazards.push_back(ref->GetHandle());
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+        }
+        for (const auto& handle : m_areaHazards) {
+            const auto ref = handle.get();
+            auto* hazard = ref ? ref->As<RE::Hazard>() : nullptr;
+            if (!hazard || hazard->IsDeleted() || hazard->IsDisabled() || !hazard->Get3D()) {
+                continue;
+            }
+            const auto& runtime = hazard->GetHazardRuntimeData();
+            auto* base = runtime.hazard;
+            auto* spell = base ? base->data.spell : nullptr;
+            if (!spell || !std::isfinite(runtime.age) || !std::isfinite(runtime.lifetime) ||
+                (runtime.lifetime > 0 && runtime.age >= runtime.lifetime)) {
+                continue;
+            }
+            bool destructive = false;
+            for (auto* effect : spell->effects) {
+                destructive = destructive || (effect && effect->baseEffect &&
+                                              effect->baseEffect->GetMagickSkill() == RE::ActorValue::kDestruction);
+            }
+            if (!destructive) {
+                continue;
+            }
+            const auto origin = convertNi(hazard->GetPosition());
+            const float radius = runtime.radius * 22.f;
+            if (!std::isfinite(origin.length2()) || !std::isfinite(radius) || radius <= 0) {
+                continue;
+            }
+            const auto id = hazard->GetFormID();
+            next.try_emplace(id);
+            effects.push_back({id,
+                               hazard->GetParentCell(),
+                               origin,
+                               origin,
+                               {0, 0, 0},
+                               std::clamp(radius, 1.f, 8192.f),
+                               BannerMagicImpulseBudget(false, true, 0, dt) * 2.f,
+                               0,
+                               true,
+                               true,
+                               false,
+                               false,
+                               false,
+                               true,
+                               runtime.age});
+        }
+        std::vector<std::pair<RE::ObjectRefHandle, RE::FormID>> areaCasts;
+        {
+            std::lock_guard guard(m_damageEventLock);
+            areaCasts.swap(m_areaCasts);
+        }
+        for (const auto& [handle, spellID] : areaCasts) {
+            const auto caster = handle.get();
+            auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(spellID);
+            if (!caster || !spell || caster->IsDeleted() || caster->IsDisabled()) {
+                continue;
+            }
+            const auto origin = convertNi(caster->GetPosition());
+            if (!std::isfinite(origin.length2())) {
+                continue;
+            }
+            for (auto* effect : spell->effects) {
+                auto* setting = effect ? effect->baseEffect : nullptr;
+                if (!setting || !effect->GetArea() ||
+                    (setting->data.projectileBase &&
+                     setting->GetArchetype() != RE::EffectArchetypes::ArchetypeID::kSpawnHazard) ||
+                    setting->data.delivery != RE::MagicSystem::Delivery::kSelf) {
+                    continue;
+                }
+                const bool damage =
+                    MagicMatchesKeywords(nullptr, setting, nullptr, BP::Settings::increaseDegradationKeywords);
+                const bool heat = MagicMatchesKeywords(nullptr, setting, nullptr, BP::Settings::triggerBurnKeywords);
+                if (!damage && !heat && setting->GetMagickSkill() != RE::ActorValue::kDestruction) {
+                    continue;
+                }
+                bool master = false;
+                const float magnitude = matchingMagnitude(spell, setting, nullptr, master);
+                const float radius = std::clamp(float(effect->GetArea()) * (64.f / 3.f), 1.f, 8192.f);
+                auto* explosion = setting->data.explosion;
+                const float force = explosion ? explosion->data.force : 0.f;
+                const auto id = caster->GetFormID();
+                next.try_emplace(id);
+                effects.push_back(
+                    {id,
+                     caster->GetParentCell(),
+                     origin,
+                     origin,
+                     {0, 0, 0},
+                     radius,
+                     BannerMagicImpulseBudget(false, false, force, dt) * BannerMagicIntensity(0, magnitude, 1.f),
+                     magnitude,
+                     false,
+                     true,
+                     damage,
+                     heat,
+                     master || magnitude >= 100.f});
+            }
         }
         if (!effects.empty()) {
             for (auto& instance : m_bannerInstances) {
@@ -716,18 +912,15 @@ namespace hdt {
                 std::array<SkinnedMeshBone*, 88> bones{};
                 std::array<btVector3, 88> positions{};
                 btVector3 center(0, 0, 0);
-                bool valid = true;
+                const unsigned gridStep = BannerGridStep(instance.bones);
+                const unsigned boneCount = gridStep == 1 ? 75 : 24;
                 for (unsigned i = 0; i < 75; ++i) {
                     bones[i] = instance.bones[i];
                     if (!bones[i]) {
-                        valid = false;
-                        break;
+                        continue;
                     }
                     positions[i] = bones[i]->m_rig.getWorldTransform().getOrigin();
-                    center += positions[i] / 75.f;
-                }
-                if (!valid) {
-                    continue;
+                    center += positions[i] / float(boneCount);
                 }
                 for (unsigned i = 75; i < 88; ++i) {
                     if ((bones[i] = instance.bones[i])) {
@@ -763,10 +956,8 @@ namespace hdt {
                     btVector3 contact(0, 0, 0);
                     float best = 2;
                     bool hit = false, ropeHit = false;
-                    for (unsigned face = 0; face < 112; ++face) {
-                        const unsigned cell = face / 2, a = (cell / 4) * 5 + cell % 4;
-                        const std::array<unsigned, 3> ids = face % 2 ? std::array<unsigned, 3>{a + 1, a + 6, a + 5}
-                                                                     : std::array<unsigned, 3>{a, a + 1, a + 5};
+                    for (unsigned face = 0; face < 112 / (gridStep * gridStep); ++face) {
+                        const auto ids = BannerGridFace(face, gridStep);
                         float at;
                         btVector3 weights;
                         if (!BannerArrowClothHit(effect.from, delta,
@@ -775,7 +966,7 @@ namespace hdt {
                             at >= best) {
                             continue;
                         }
-                        if (instance.damageApplied &&
+                        if (!effect.blast && instance.damageApplied &&
                             !BannerDamageTrianglePointPresent({uint8_t(ids[0]), uint8_t(ids[1]), uint8_t(ids[2])},
                                                               {weights.x(), weights.y(), weights.z()},
                                                               instance.damageMask)) {
@@ -812,7 +1003,7 @@ namespace hdt {
                     pick.ray = pick.rayInput.to - pick.rayInput.from;
                     pick.rayInput.enableShapeCollectionFilter = true;
                     pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kClutter);
-                    if (BP::PickBannerSolid(world, pick)) {
+                    if (!effect.blast && BP::PickBannerSolid(world, pick)) {
                         const float before = (1 - pick.rayOutput.hitFraction) * (contact - effect.from).length();
                         if (before > 4.f) {
                             continue;
@@ -837,7 +1028,12 @@ namespace hdt {
                             }
                             if (BP::Settings::bEnableMagicDegradation && effect.damage &&
                                 (effect.continuous || !state.damaged.contains(ref->GetFormID()))) {
-                                BannerMagicDamageHit(damage.hits, damage.magicDamageCooldown);
+                                if (BannerMagicDamageHit(damage.hits, damage.magicDamageCooldown, effect.magnitude,
+                                                         effect.continuous, effect.devastating) &&
+                                    effect.devastating) {
+                                    damage.completedStage = 4;
+                                    damage.transitionAge = kBannerWearTransitionSeconds;
+                                }
                             }
                             if (!effect.continuous && effect.damage && BP::Settings::bEnableMagicDegradation) {
                                 state.damaged.insert(ref->GetFormID());
@@ -847,6 +1043,9 @@ namespace hdt {
                     if (!ropeHit && effect.heat && BP::Settings::bEnableDegradation) {
                         if (auto damage = m_bannerDamage.find(ref->GetFormID()); damage != m_bannerDamage.end()) {
                             damage->second.fireContactTime = .15f;
+                            if (!effect.continuous) {
+                                damage->second.fireGlowHeat = 1.f;
+                            }
                         }
                     }
                     bool applied = false;
@@ -874,9 +1073,20 @@ namespace hdt {
                             continue;
                         }
                         const float weight = weights[i] / totalWeight;
-                        const auto direction = effect.blast ? positions[i] - effect.from : effect.direction;
-                        const auto kick =
-                            BannerMagicKick(rig.getLinearVelocity(), direction, budget * rig.getInvMass(), weight);
+                        auto direction = effect.blast ? positions[i] - effect.from : effect.direction;
+                        float pulse = 1.f;
+                        if (effect.vortex) {
+                            const float phase = effect.age * 4.0840704f - float(i < 75 ? i / 5 : 14) * .32f +
+                                                float(effect.id & 255) * .0245437f;
+                            pulse = .5f + .5f * std::sin(phase);
+                            const float radial = .2f * std::sin(phase * .73f);
+                            const float lift = .15f + .25f * std::sin(phase + .8f);
+                            direction = btVector3(
+                                -direction.y() + direction.x() * radial, direction.x() + direction.y() * radial,
+                                std::sqrt(direction.x() * direction.x() + direction.y() * direction.y()) * lift);
+                        }
+                        const auto kick = BannerMagicKick(rig.getLinearVelocity(), direction,
+                                                          budget * pulse * rig.getInvMass(), weight);
                         if (kick.length2() > .000001f) {
                             rig.activate(true);
                             rig.applyCentralImpulse(kick / rig.getInvMass());

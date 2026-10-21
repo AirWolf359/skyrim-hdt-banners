@@ -11,4 +11,4 @@ namespace BP {
     uintptr_t address(uintptr_t rva);
 }
 
-#endif // FSMP_BRIDGE_H
+#endif

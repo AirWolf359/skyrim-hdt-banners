@@ -6,6 +6,7 @@ namespace hdt {
         intensity = std::clamp(intensity, 0.f, 1.f);
         const bool contact = intensity > 0;
         const unsigned glowWidth = BannerFireWidth(intensity);
+        const auto tint = BannerFireTint(intensity);
         using Property = RE::BSShaderProperty;
         auto* property = netimmerse_cast<RE::BSLightingShaderProperty*>(part.originalShader.get());
         if (!property || (!contact && !part.fireGlowActive)) {
@@ -13,7 +14,7 @@ namespace hdt {
         }
         if (!contact) {
             property->SetMaterial(part.cooledMaterial.get(), true);
-            part.cooledMaterial = RE::BSTSmartPointer<RE::BSShaderMaterial>(property->material);
+            part.cooledLiveMaterial = property->material;
             property->SetFlags(Property::EShaderPropertyFlag8::kOwnEmit, part.originalOwnEmit);
             property->SetFlags(Property::EShaderPropertyFlag8::kGlowMap, part.originalGlowMap);
             property->emissiveColor = part.originalEmissiveColor;
@@ -23,7 +24,10 @@ namespace hdt {
             return;
         }
         if (part.fireGlowActive) {
-            property->emissiveMult = 5.f * intensity;
+            if (part.fireColor) {
+                *part.fireColor = RE::NiColor(tint[0], tint[1], tint[2]);
+            }
+            property->emissiveMult = 6.f * intensity;
             if (part.glowCutoff != part.wearCutoff || part.glowWidth != glowWidth) {
                 auto* hot = static_cast<RE::BSLightingShaderMaterialGlowmap*>(part.fireMaterial.get());
                 auto* cooled = static_cast<RE::BSLightingShaderMaterialBase*>(part.cooledMaterial.get());
@@ -37,7 +41,7 @@ namespace hdt {
             return;
         }
         if (!part.geometry || part.geometry->GetGeometryRuntimeData().shaderProperty != part.originalShader ||
-            !part.cooledMaterial || property->material != part.cooledMaterial.get()) {
+            !part.cooledMaterial || property->material != part.cooledLiveMaterial) {
             return;
         }
         auto* cooled = static_cast<RE::BSLightingShaderMaterialBase*>(part.cooledMaterial.get());
@@ -129,7 +133,7 @@ namespace hdt {
             part.fireMaterial = std::move(material);
             part.glowCutoff = part.wearCutoff;
             part.glowWidth = glowWidth;
-            part.fireColor = std::make_unique<RE::NiColor>(1.f, 1.f, 1.f);
+            part.fireColor = std::make_unique<RE::NiColor>(tint[0], tint[1], tint[2]);
         }
         part.originalOwnEmit = property->flags.any(Property::EShaderPropertyFlag::kOwnEmit);
         part.originalGlowMap = property->flags.any(Property::EShaderPropertyFlag::kGlowMap);
@@ -139,7 +143,7 @@ namespace hdt {
         property->SetFlags(Property::EShaderPropertyFlag8::kOwnEmit, true);
         property->SetFlags(Property::EShaderPropertyFlag8::kGlowMap, true);
         property->emissiveColor = part.fireColor.get();
-        property->emissiveMult = 5.f * intensity;
+        property->emissiveMult = 6.f * intensity;
         property->DoClearRenderPasses();
         part.fireGlowActive = true;
     }
@@ -213,8 +217,7 @@ namespace hdt {
             }
             if (result != RE::BSResource::ErrorCode::kNone || !loaded) {
                 if (state.root.get() != root) {
-                    logger::error("Runtime alpha model load failed: {} code={} diffuse={}", path,
-                                  static_cast<uint32_t>(result), texture);
+                    logger::error("Could not load wear model {} (error {})", path, static_cast<uint32_t>(result));
                 }
                 state.root = hdt::make_nismart(root);
                 return false;
@@ -311,9 +314,7 @@ namespace hdt {
         }
         if (loadedDesc.Width < 64 || loadedDesc.Height < 64) {
             if (state.root.get() != root) {
-                logger::error("Alpha donor GPU resource unavailable: {} name={} GPU={}x{} wrapper={}x{}", stem,
-                              loadedDiffuse->name.c_str(), loadedDesc.Width, loadedDesc.Height, loadedGPU->width,
-                              loadedGPU->height);
+                logger::error("Wear texture unavailable: {}", stem);
             }
             state.root = hdt::make_nismart(root);
             return false;
@@ -335,9 +336,8 @@ namespace hdt {
                 auto* candidate = obj ? obj->AsTriShape() : nullptr;
                 if (candidate && candidate != geometry &&
                     candidate->GetGeometryRuntimeData().shaderProperty.get() == original) {
-                    logger::error(
-                        "Refused shared live shader on banner {:08X}; material change would affect another cloth part",
-                        state.reference.get() ? state.reference.get()->GetFormID() : 0);
+                    logger::error("Shared shader prevented wear on banner {:08X}",
+                                  state.reference.get() ? state.reference.get()->GetFormID() : 0);
                     return false;
                 }
             }
@@ -347,6 +347,11 @@ namespace hdt {
             return false;
         }
         privateMaterial->CopyMembers(material);
+        RE::BSTSmartPointer<RE::BSShaderMaterial> originalSnapshot(material->Create());
+        if (!originalSnapshot) {
+            return false;
+        }
+        originalSnapshot->CopyMembers(material);
         auto* masked = static_cast<RE::BSLightingShaderMaterialBase*>(privateMaterial.get());
         masked->diffuseTexture = donorMaterial->diffuseTexture;
         auto textureSet = hdt::make_nismart(RE::BSShaderTextureSet::Create());
@@ -398,9 +403,10 @@ namespace hdt {
             original->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kNoTransparencyMultiSample, true);
             geometry->GetGeometryRuntimeData().alphaProperty = privateAlpha;
         }
-        part.originalMaterial = RE::BSTSmartPointer<RE::BSShaderMaterial>(material);
+        part.originalMaterial = std::move(originalSnapshot);
         original->SetMaterial(privateMaterial.get(), true);
-        part.cooledMaterial = RE::BSTSmartPointer<RE::BSShaderMaterial>(original->material);
+        part.cooledLiveMaterial = original->material;
+        part.cooledMaterial = std::move(privateMaterial);
         original->DoClearRenderPasses();
 
         state.parts.push_back(std::move(part));
@@ -439,6 +445,7 @@ namespace hdt {
     void BannerRuntime::QueueBannerDamageReset() {
         std::lock_guard guard(m_damageEventLock);
         m_damageResetRequested = true;
+        m_areaCasts.clear();
     }
 
     void BannerRuntime::SyncBannerDamage() {

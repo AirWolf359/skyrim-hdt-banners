@@ -93,7 +93,6 @@ namespace BP {
                 logger::critical("Unsupported FSMP binary: {}. No hooks installed.", reason);
                 return false;
             }
-            logger::info("FSMP compatibility resolved from local symbols.");
         }
         base = reinterpret_cast<uintptr_t>(module);
         for (const auto& signature : Offsets::selected->signatures) {
@@ -110,16 +109,20 @@ namespace BP {
     static void (*originalSpring)(btTypedConstraint*, btTypedConstraint::btConstraintInfo2*) = nullptr;
     static void (*originalWind)(hdt::SkinnedMeshWorld*, float) = nullptr;
 
+    static bool gameFocused() {
+        DWORD process = 0;
+        const auto window = GetForegroundWindow();
+        return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
+    }
+
     static void update(hdt::SkyrimPhysicsWorld* world, float dt) {
         auto* actors = pointer<hdt::ActorManager* (*)()>(Offsets::selected->actors)();
         const int old = actors->activeSkeletons;
-        const bool admit = old == 0 && hdt::BannerRuntime::GetSingleton().HasBanners();
+        const bool admit = old == 0 && gameFocused() && hdt::BannerRuntime::GetSingleton().HasBanners();
         if (admit) {
             actors->activeSkeletons = 1;
         }
-        {
-            originalUpdate(world, dt);
-        }
+        originalUpdate(world, dt);
         if (admit) {
             actors->activeSkeletons = old;
         }
@@ -140,6 +143,10 @@ namespace BP {
     }
 
     static void wind(hdt::SkinnedMeshWorld* world, float dt) {
+        if (!gameFocused()) {
+            originalWind(world, dt);
+            return;
+        }
         auto& runtime = hdt::BannerRuntime::GetSingleton();
         auto forces = runtime.CaptureWindForces();
         originalWind(world, dt);
@@ -149,7 +156,9 @@ namespace BP {
     struct FrameSink : RE::BSTEventSink<Events::FrameEvent> {
         RE::BSEventNotifyControl ProcessEvent(const Events::FrameEvent*,
                                               RE::BSTEventSource<Events::FrameEvent>*) override {
-            hdt::BannerRuntime::GetSingleton().BeforeFrame();
+            if (gameFocused()) {
+                hdt::BannerRuntime::GetSingleton().BeforeFrame();
+            }
             return RE::BSEventNotifyControl::kContinue;
         }
     };
@@ -159,6 +168,9 @@ namespace BP {
 
         RE::BSEventNotifyControl ProcessEvent(const Events::FrameSyncEvent*,
                                               RE::BSTEventSource<Events::FrameSyncEvent>*) override {
+            if (!gameFocused()) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
             if (after) {
                 hdt::BannerRuntime::GetSingleton().AfterWrite();
             } else {
@@ -244,7 +256,6 @@ namespace BP {
         pointer<Events::Sources::ShutdownEventEventSource* (*)()>(Offsets::selected->shutdownSource)()
             ->PrependEventSink(&Shutdown);
         connected = true;
-        logger::info("FSMP integration ready.");
         return true;
     }
 }

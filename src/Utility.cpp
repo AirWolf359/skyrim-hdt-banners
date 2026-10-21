@@ -24,6 +24,7 @@ namespace BP::Settings {
         const auto size = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
         bEnableDegradation = true;
         bEnableMagicDegradation = true;
+        bEnableEnchantedBurnEffect = true;
         increaseDegradationKeywords = {"MagicDamageFire", "MagicDamageShock"};
         triggerBurnKeywords = {"MagicDamageFire", "MagicDamageShock"};
         bEnableInterior = true;
@@ -41,16 +42,13 @@ namespace BP::Settings {
             const auto settings = Read(input);
             bEnableDegradation = settings.degradation;
             bEnableMagicDegradation = settings.magicDegradation;
+            bEnableEnchantedBurnEffect = settings.enchantedBurnEffect;
             increaseDegradationKeywords = settings.increaseDegradationKeywords;
             triggerBurnKeywords = settings.triggerBurnKeywords;
             bEnableInterior = settings.interior;
             iMaxPhysicsBanners = settings.maxPhysicsBanners;
             fBannerWeightMult = settings.bannerWeightMult;
         }
-        logger::info("bEnableDegradation={}, bEnableMagicDegradation={}, bEnableInterior={}, iMaxPhysicsBanners={}, "
-                     "fBannerWeightMult={} ({})",
-                     bEnableDegradation ? 1 : 0, bEnableMagicDegradation ? 1 : 0, bEnableInterior ? 1 : 0,
-                     iMaxPhysicsBanners, fBannerWeightMult, loaded ? "INI" : "default");
     }
 }
 
@@ -714,7 +712,8 @@ namespace BP::Offsets {
                         return value != 0;
                     })) {
                     if (valid) {
-                        reason = springVtable ? "Required FSMP function information is missing" : "Required FSMP spring vtable is missing";
+                        reason = springVtable ? "Required FSMP function information is missing"
+                                              : "Required FSMP spring vtable is missing";
                     }
                     return false;
                 }

@@ -8,8 +8,8 @@ extern "C" __declspec(dllexport) constinit SKSE::PluginVersionData SKSEPlugin_Ve
     v.PluginVersion(REL::Version(1, 1, 0, 0));
     v.PluginName("BannerPhysics");
     v.AuthorName("Banner Physics");
-    v.CompatibleVersions({BP::runtimeAE, BP::runtimeCurrent});
-    v.UsesUpdatedStructs();
+    v.UsesAddressLibrary();
+    v.UsesNoStructs();
     return v;
 }();
 
@@ -45,6 +45,7 @@ namespace {
                 }
                 if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
                     holder->AddEventSink<RE::TESCellAttachDetachEvent>(&hdt::BannerRuntime::GetSingleton());
+                    holder->AddEventSink<RE::TESSpellCastEvent>(&hdt::BannerRuntime::GetSingleton());
                 }
                 break;
             case SKSE::MessagingInterface::kNewGame:
@@ -63,12 +64,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     }
 
     if (skse->IsEditor() || !BP::supportsRuntime(skse->RuntimeVersion())) {
-        logger::critical("Unsupported runtime {}; targets are 1.6.1170 and 1.7.104", skse->RuntimeVersion().string());
+        logger::critical("Unsupported runtime {}; targets are 1.5.97, 1.6.x and 1.7.104",
+                         skse->RuntimeVersion().string());
         return false;
     }
-    logger::info("Skyrim runtime: {}.", skse->RuntimeVersion().string());
     SKSE::Init(skse, false);
     BP::Settings::Load();
-    logger::info("Banner Physics successfully loaded.");
+    logger::info("Banner Physics loaded (Skyrim {})", skse->RuntimeVersion().string());
     return SKSE::GetMessagingInterface()->RegisterListener(SKSEMessageHandler);
 }

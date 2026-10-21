@@ -359,6 +359,7 @@ namespace hdt {
     struct BannerActorShape {
         BannerActorCapsule capsule;
         std::uintptr_t identity;
+        RE::EnchantmentItem* enchantment = nullptr;
     };
 
     inline bool BannerActorCanSweep(const BannerActorShape& before, const BannerActorShape& current) {
@@ -476,8 +477,8 @@ namespace hdt {
 }
 
 namespace hdt {
-    inline bool BannerFaceRecoveryVisit(unsigned sequence) {
-        return (sequence / 112) % 4 == 3;
+    inline bool BannerFaceRecoveryVisit(unsigned sequence, unsigned faceCount = 112) {
+        return (sequence / faceCount) % 4 == 3;
     }
 
     struct BannerFaceSupport {
@@ -697,4 +698,4 @@ namespace BP {
     }
 }
 
-#endif // BANNER_COLLISION_H
+#endif

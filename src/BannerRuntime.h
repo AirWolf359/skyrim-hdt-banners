@@ -6,7 +6,8 @@
 #include <wrl/client.h>
 
 namespace hdt {
-    class BannerRuntime : public RE::BSTEventSink<RE::TESCellAttachDetachEvent> {
+    class BannerRuntime : public RE::BSTEventSink<RE::TESCellAttachDetachEvent>,
+                          public RE::BSTEventSink<RE::TESSpellCastEvent> {
     public:
         static BannerRuntime& GetSingleton();
         void BeforeFrame();
@@ -31,6 +32,8 @@ namespace hdt {
         RE::BSEventNotifyControl ProcessEvent(const RE::TESCellAttachDetachEvent*,
                                               RE::BSTEventSource<RE::TESCellAttachDetachEvent>*) override;
         void QueueBannerDamageReset();
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent*,
+                                              RE::BSTEventSource<RE::TESSpellCastEvent>*) override;
 
     private:
         struct BannerArrowState {
@@ -48,6 +51,7 @@ namespace hdt {
         void SyncBannerInstance(RE::TESObjectREFR* candidate);
         void SyncAllBanners();
         void SyncBannerMagic();
+        void ApplyBannerEnchantmentHit(RE::EnchantmentItem* enchantment, RE::ObjectRefHandle reference);
 
         struct BannerMagicState {
             RE::ProjectileHandle projectile;
@@ -99,6 +103,7 @@ namespace hdt {
             RE::BSTSmartPointer<RE::BSShaderMaterial> originalMaterial;
             RE::NiPointer<RE::NiAlphaProperty> originalAlpha, animatedAlpha;
             RE::BSTSmartPointer<RE::BSShaderMaterial> cooledMaterial, fireMaterial;
+            RE::BSShaderMaterial* cooledLiveMaterial = nullptr;
             std::unique_ptr<RE::NiColor> fireColor;
             RE::NiColor* originalEmissiveColor = nullptr;
             float originalEmissiveMult = 0;
@@ -150,9 +155,12 @@ namespace hdt {
         std::unordered_map<std::string, RE::NiPointer<RE::NiSourceTexture>> m_damageGlowTextures;
         std::unordered_map<std::string, RE::NiPointer<RE::NiNode>> m_damageGlowModels;
         std::mutex m_damageEventLock;
+        std::vector<std::pair<RE::ObjectRefHandle, RE::FormID>> m_areaCasts;
+        std::vector<RE::ObjectRefHandle> m_areaHazards;
+        float m_hazardScanAge = .5f;
         std::vector<RE::FormID> m_detachedBannerReferences;
         bool m_damageResetRequested = false;
     };
 }
 
-#endif // BANNER_RUNTIME_H
+#endif
