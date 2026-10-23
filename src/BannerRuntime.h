@@ -50,6 +50,7 @@ namespace hdt {
 
         void SyncBannerInstance(RE::TESObjectREFR* candidate);
         void SyncAllBanners();
+        void ResolveBannerRooms();
         void SyncBannerMagic();
         void ApplyBannerEnchantmentHit(RE::EnchantmentItem* enchantment, RE::ObjectRefHandle reference);
 
@@ -86,6 +87,7 @@ namespace hdt {
             std::array<BP::BannerSweepHistory, 88> worldSweeps{};
             std::array<SkinnedMeshBone*, 88> bones{};
             bool worldContactInitialized = false;
+            bool roomResolved = false;
             std::array<BannerWallSupport, 88> wallSupports{};
             std::array<BannerFaceSupport, 112> faceSupports{};
             unsigned faceProbeCursor = 0, recoveryProbeCursor = 0;

@@ -2,54 +2,117 @@
 #include "FSMPBridge.h"
 
 namespace {
-    using BannerVisibilityList = std::vector<std::pair<RE::ObjectRefHandle, RE::NiPointer<RE::NiNode>>>;
+    float BannerBoundDistanceSquared(RE::BSMultiBound* bound, const RE::NiPoint3& point) {
+        auto* box = bound && bound->data ? netimmerse_cast<RE::BSMultiBoundAABB*>(bound->data.get()) : nullptr;
+        if (!box || box->size.x < 0 || box->size.y < 0 || box->size.z < 0) {
+            return std::numeric_limits<float>::infinity();
+        }
+        auto delta = point - box->center;
+        if (auto* oriented = netimmerse_cast<RE::BSMultiBoundOBB*>(box)) {
+            delta = oriented->rotation.Transpose() * delta;
+        }
+        delta.x = std::max(std::abs(delta.x) - box->size.x, 0.0f);
+        delta.y = std::max(std::abs(delta.y) - box->size.y, 0.0f);
+        delta.z = std::max(std::abs(delta.z) - box->size.z, 0.0f);
+        return delta.SqrLength();
+    }
 
-    void UpdateBannerVisibility(BannerVisibilityList banners) {
-        SKSE::GetTaskInterface()->AddTask([banners = std::move(banners)] {
-            struct Entry {
-                RE::NiPointer<RE::BSPortalGraph> graph;
-                RE::NiPointer<RE::NiAVObject> root;
-            };
-            static std::vector<Entry> entries;
-            const auto graphFor = [](RE::TESObjectREFR* ref) -> RE::BSPortalGraph* {
-                auto* cell = ref ? ref->GetParentCell() : nullptr;
-                auto* loaded = cell && cell->IsInteriorCell() ? cell->GetRuntimeData().loadedData : nullptr;
-                return loaded ? loaded->portalGraph.get() : nullptr;
-            };
-            for (auto it = entries.begin(); it != entries.end();) {
-                const bool active = std::any_of(banners.begin(), banners.end(), [&](const auto& banner) {
-                    auto ref = banner.first.get();
-                    return ref && !ref->IsDisabled() && ref->Get3D() == banner.second.get() &&
-                           banner.second.get() == it->root.get() && graphFor(ref.get()) == it->graph.get();
-                });
-                if (active) {
-                    ++it;
-                    continue;
-                }
-                auto& children = it->graph->alwaysRenderChildren;
-                const auto found = std::find(children.begin(), children.end(), it->root);
-                if (found != children.end()) {
-                    children.erase(found);
-                }
-                it = entries.erase(it);
+    RE::BSMultiBoundRoom* NearestBannerRoom(const RE::BSTArray<RE::NiPointer<RE::BSMultiBoundRoom>>& rooms,
+                                            const RE::NiPoint3& center, float range) {
+        if (!std::isfinite(range) || range <= 0) {
+            return nullptr;
+        }
+        RE::BSMultiBoundRoom* selected = nullptr;
+        float nearest = range * range;
+        bool tied = false;
+        for (const auto& room : rooms) {
+            if (!room) {
+                continue;
             }
-            for (const auto& [handle, root] : banners) {
-                auto ref = handle.get();
-                if (!ref || ref->IsDisabled() || ref->Get3D() != root.get()) {
-                    continue;
-                }
-                auto* graph = graphFor(ref.get());
-                if (!graph) {
-                    continue;
-                }
-                auto& children = graph->alwaysRenderChildren;
-                RE::NiPointer<RE::NiAVObject> object(root.get());
-                if (std::find(children.begin(), children.end(), object) == children.end()) {
-                    children.push_back(object);
-                    entries.push_back({RE::NiPointer<RE::BSPortalGraph>(graph), object});
-                }
+            float distance = BannerBoundDistanceSquared(room->GetRuntimeData().multiBound.get(), center);
+            for (const auto& joined : room->joinedMultiBoundList) {
+                distance = std::min(distance, BannerBoundDistanceSquared(joined.get(), center));
             }
-        });
+            if (!std::isfinite(distance)) {
+                continue;
+            }
+            if (distance < nearest) {
+                selected = room.get();
+                nearest = distance;
+                tied = false;
+            } else if (distance == nearest && selected && selected != room.get()) {
+                tied = true;
+            }
+        }
+        return tied ? nullptr : selected;
+    }
+
+    bool BannerRoomContains(RE::BSMultiBoundRoom* room, const RE::NiPoint3& point) {
+        auto* bound = room ? room->GetRuntimeData().multiBound.get() : nullptr;
+        if (!bound) {
+            return false;
+        }
+        if (bound->QWithinPoint(point)) {
+            return true;
+        }
+        for (const auto& joined : room->joinedMultiBoundList) {
+            if (joined && joined->QWithinPoint(point)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    RE::BSMultiBoundRoom* SelectBannerRoom(const RE::BSTArray<RE::NiPointer<RE::BSMultiBoundRoom>>& rooms,
+                                           RE::BSMultiBoundRoom* current, const RE::NiPoint3& anchor,
+                                           const RE::NiPoint3& center) {
+        std::vector<RE::BSMultiBoundRoom*> centers, anchors;
+        for (const auto& room : rooms) {
+            auto* bound = room ? room->GetRuntimeData().multiBound.get() : nullptr;
+            if (!bound) {
+                continue;
+            }
+            if (BannerRoomContains(room.get(), center)) {
+                centers.push_back(room.get());
+            }
+            if (BannerRoomContains(room.get(), anchor)) {
+                anchors.push_back(room.get());
+            }
+        }
+        if (std::find(centers.begin(), centers.end(), current) != centers.end()) {
+            return current;
+        }
+        if (centers.size() == 1) {
+            return centers.front();
+        }
+        if (centers.empty() && anchors.size() == 1) {
+            return anchors.front();
+        }
+        const auto& candidates = centers.empty() ? anchors : centers;
+        RE::BSMultiBoundRoom* selected = nullptr;
+        float nearest = std::numeric_limits<float>::max();
+        bool tied = false;
+        for (auto* room : candidates) {
+            auto* bound = room->GetRuntimeData().multiBound.get();
+            if (!bound || !bound->data) {
+                continue;
+            }
+            RE::NiBound roomBound;
+            bound->data->GetNiBound(&roomBound);
+            const auto delta = center - roomBound.center;
+            const float distance = delta.SqrLength();
+            if (!std::isfinite(distance)) {
+                continue;
+            }
+            if (distance < nearest) {
+                nearest = distance;
+                selected = room;
+                tied = false;
+            } else if (distance == nearest && selected != room) {
+                tied = true;
+            }
+        }
+        return tied ? nullptr : selected;
     }
 }
 
@@ -107,6 +170,7 @@ namespace hdt {
         m_loading = BP::loading();
         BP::BeginBannerWorldQueries();
         SyncAllBanners();
+        ResolveBannerRooms();
         SyncBannerMagic();
         SyncBannerDamage();
         HoldBannerAnchors();
@@ -152,8 +216,106 @@ namespace hdt {
         }
     }
 
+    void BannerRuntime::ResolveBannerRooms() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* ui = RE::UI::GetSingleton();
+        auto* cell = player ? player->GetParentCell() : nullptr;
+        if (m_loading || !ui || ui->GameIsPaused() || !cell || !cell->IsInteriorCell() || !cell->IsAttached()) {
+            return;
+        }
+        auto* loaded = cell->GetRuntimeData().loadedData;
+        if (!loaded || !loaded->refsFullyLoaded || loaded->criticalQueuedRefCount || loaded->queuedRefCount) {
+            return;
+        }
+        auto* graph = loaded->portalGraph.get();
+        if (!graph || graph->cellID != cell->GetFormID() || graph->rooms.empty() || graph->rooms.size() > 4096 ||
+            graph->alwaysRenderChildren.size() > 100000) {
+            return;
+        }
+        for (auto& instance : m_bannerInstances) {
+            if (instance.roomResolved) {
+                continue;
+            }
+            auto ref = instance.reference.get();
+            auto* root = instance.root.get();
+            if (!ref || ref->IsDisabled() || !root || ref->Get3D() != root || ref->GetParentCell() != cell) {
+                continue;
+            }
+            if (std::any_of(graph->alwaysRenderChildren.begin(), graph->alwaysRenderChildren.end(),
+                            [root](const auto& child) {
+                                return child.get() == root;
+                            })) {
+                instance.roomResolved = true;
+                continue;
+            }
+            RE::BSMultiBoundRoom* current = nullptr;
+            auto* ancestor = root->parent;
+            for (unsigned depth = 0; ancestor && depth < 32; ++depth, ancestor = ancestor->parent) {
+                current = netimmerse_cast<RE::BSMultiBoundRoom*>(ancestor);
+                if (current) {
+                    break;
+                }
+            }
+            RE::NiPoint3 center{};
+            unsigned count = 0;
+            for (unsigned i = 0; i < 75; ++i) {
+                auto* bone = instance.bones[i];
+                auto* node = bone ? static_cast<SkyrimBone*>(bone)->m_node.get() : nullptr;
+                if (node) {
+                    center += node->world.translate;
+                    ++count;
+                }
+            }
+            center = count ? center / static_cast<float>(count) : root->worldBound.center;
+            auto* selected = SelectBannerRoom(graph->rooms, current, root->world.translate, center);
+            instance.roomResolved = true;
+            unsigned centerRooms = 0, anchorRooms = 0;
+            for (const auto& room : graph->rooms) {
+                centerRooms += BannerRoomContains(room.get(), center);
+                anchorRooms += BannerRoomContains(room.get(), root->world.translate);
+            }
+            if (!selected && !centerRooms && !anchorRooms) {
+                float extentSquared = 0;
+                for (unsigned i = 0; i < 75; ++i) {
+                    auto* bone = instance.bones[i];
+                    auto* node = bone ? static_cast<SkyrimBone*>(bone)->m_node.get() : nullptr;
+                    if (node) {
+                        extentSquared = std::max(extentSquared, (node->world.translate - center).SqrLength());
+                    }
+                }
+                const float range = 2.0f * std::sqrt(extentSquared);
+                selected = NearestBannerRoom(graph->rooms, center, range);
+            }
+            if (!selected || selected == current || selected->world.scale <= .0001f) {
+                continue;
+            }
+            bool cycle = false;
+            ancestor = selected;
+            for (unsigned depth = 0; ancestor && depth < 32; ++depth, ancestor = ancestor->parent) {
+                if (ancestor == root) {
+                    cycle = true;
+                    break;
+                }
+            }
+            if (cycle) {
+                continue;
+            }
+            const auto world = root->world;
+            const auto& parent = selected->world;
+            RE::NiTransform local;
+            local.rotate = parent.rotate.Transpose() * world.rotate;
+            local.translate = (parent.rotate.Transpose() * (world.translate - parent.translate)) / parent.scale;
+            local.scale = world.scale / parent.scale;
+            selected->AttachChild(root, true);
+            if (root->parent == selected) {
+                root->local = local;
+            } else {
+                logger::error("Banner room attachment failed for {:08X}", ref->GetFormID());
+            }
+        }
+    }
+
     void BannerRuntime::Shutdown() {
-        UpdateBannerVisibility({});
         auto* world = SkyrimPhysicsWorld::get();
         {
             auto lock = world->lockSimulation();
@@ -378,16 +540,6 @@ namespace hdt {
                     }
                 }
             }
-        }
-        static float visibilityAge = 0;
-        visibilityAge += std::clamp(RE::GetSecondsSinceLastFrame(), 0.f, .1f);
-        if (visibilityAge >= 1.f && !m_loading && player && ui && !ui->GameIsPaused()) {
-            visibilityAge = 0;
-            BannerVisibilityList banners;
-            for (const auto& instance : m_bannerInstances) {
-                banners.emplace_back(instance.reference, instance.root);
-            }
-            UpdateBannerVisibility(std::move(banners));
         }
         std::vector<RE::ProjectileHandle> flying;
         if (!m_bannerInstances.empty()) {

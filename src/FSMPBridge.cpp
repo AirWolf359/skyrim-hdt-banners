@@ -116,6 +116,7 @@ namespace BP {
     }
 
     static void update(hdt::SkyrimPhysicsWorld* world, float dt) {
+
         auto* actors = pointer<hdt::ActorManager* (*)()>(Offsets::selected->actors)();
         const int old = actors->activeSkeletons;
         const bool admit = old == 0 && gameFocused() && hdt::BannerRuntime::GetSingleton().HasBanners();
@@ -143,6 +144,7 @@ namespace BP {
     }
 
     static void wind(hdt::SkinnedMeshWorld* world, float dt) {
+
         if (!gameFocused()) {
             originalWind(world, dt);
             return;
@@ -157,6 +159,7 @@ namespace BP {
         RE::BSEventNotifyControl ProcessEvent(const Events::FrameEvent*,
                                               RE::BSTEventSource<Events::FrameEvent>*) override {
             if (gameFocused()) {
+
                 hdt::BannerRuntime::GetSingleton().BeforeFrame();
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -172,8 +175,10 @@ namespace BP {
                 return RE::BSEventNotifyControl::kContinue;
             }
             if (after) {
+
                 hdt::BannerRuntime::GetSingleton().AfterWrite();
             } else {
+
                 hdt::BannerRuntime::GetSingleton().BeforeWrite();
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -183,6 +188,7 @@ namespace BP {
     struct ShutdownSink : RE::BSTEventSink<Events::ShutdownEvent> {
         RE::BSEventNotifyControl ProcessEvent(const Events::ShutdownEvent*,
                                               RE::BSTEventSource<Events::ShutdownEvent>*) override {
+
             hdt::BannerRuntime::GetSingleton().Shutdown();
             return RE::BSEventNotifyControl::kContinue;
         }

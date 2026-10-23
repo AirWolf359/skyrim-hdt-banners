@@ -1,5 +1,6 @@
 #include "BannerDegradation.h"
 #include "BannerRuntime.h"
+#include "FSMPBridge.h"
 
 namespace hdt {
     void BannerRuntime::UpdateBannerFireGlow(BannerDamagePart& part, float intensity) {
