@@ -38,6 +38,9 @@ namespace {
                 if (!SKSE::GetMessagingInterface()->RegisterListener("hdtsmp64", FSMPMessageHandler)) {
                     logger::critical("FSMP messaging unavailable; banners disabled");
                 }
+                if (REL::Module::IsVR() && !GetModuleHandleW(L"vrik.dll")) {
+                    logger::warn("VRIK not detected; player body collision with banners will not follow the headset");
+                }
                 break;
             case SKSE::MessagingInterface::kDataLoaded:
                 if (!hdt::BannerAlphaShaderBytecode()) {
@@ -64,7 +67,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     }
 
     if (skse->IsEditor() || !BP::supportsRuntime(skse->RuntimeVersion())) {
-        logger::critical("Unsupported runtime {}; targets are 1.5.97, 1.6.x and 1.7.104",
+        logger::critical("Unsupported runtime {}; targets are 1.5.97, 1.6.x, 1.7.104 and VR 1.4.15",
                          skse->RuntimeVersion().string());
         return false;
     }

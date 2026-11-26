@@ -30,6 +30,7 @@ namespace BP::Settings {
         bEnableInterior = true;
         iMaxPhysicsBanners = 64;
         fBannerWeightMult = 1.f;
+        fVRSwingSpeed = 250.f;
         if (!size || size >= executable.size()) {
             logger::warn("Could not locate BannerPhysics.ini; using defaults");
             return;
@@ -48,6 +49,7 @@ namespace BP::Settings {
             bEnableInterior = settings.interior;
             iMaxPhysicsBanners = settings.maxPhysicsBanners;
             fBannerWeightMult = settings.bannerWeightMult;
+            fVRSwingSpeed = settings.vrSwingSpeed;
         }
     }
 }
