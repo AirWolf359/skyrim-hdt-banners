@@ -32,8 +32,13 @@ and a few fixes on top of it.
 
 - SKSE (SE/AE) or SKSEVR
 - Address Library for SKSE Plugins, or the VR Address Library for SKSEVR
-- Faster HDT-SMP
-- VRIK (Skyrim VR only)
+- Faster HDT-SMP 4.1.1, 4.0.1, 4.0.0 or 3.5.0, AVX or AVX2 build. The plugin hooks into FSMP directly and
+  recognizes these builds by their exact file. With any other build it disables itself and banners stay
+  static, unless that build's `hdtsmp64.pdb` is installed next to `hdtsmp64.dll`, in which case the plugin
+  tries to locate what it needs from FSMP's symbols. Supporting a new FSMP release means adding its build to
+  the table in `src/Utility.h`.
+- VRIK (Skyrim VR only). Any version that drives the player's third-person body works: the plugin reads that
+  skeleton by bone name and doesn't call into VRIK itself.
 - The original Banner Physics mod, for its meshes, physics configs, textures and `BannerPhysics.ini`.
   This fork only replaces `SKSE/Plugins/BannerPhysics.dll`.
 
