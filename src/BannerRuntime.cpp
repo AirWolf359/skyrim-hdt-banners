@@ -2,6 +2,13 @@
 #include "FSMPBridge.h"
 
 namespace {
+    // CommonLibSSE-NG declares BSMultiBoundRoom's own members at fixed offsets. In a build that targets several
+    // runtimes, the base classes' runtime-specific members are left out, so `room->joinedMultiBoundList` reads the
+    // wrong field on every runtime. Use the real offsets: 0x168 on SE/AE, 0x190 on VR.
+    RE::NiTPointerList<RE::NiPointer<RE::BSMultiBound>>& JoinedBannerBounds(RE::BSMultiBoundRoom* room) {
+        return REL::RelocateMember<RE::NiTPointerList<RE::NiPointer<RE::BSMultiBound>>>(room, 0x168, 0x190);
+    }
+
     float BannerBoundDistanceSquared(RE::BSMultiBound* bound, const RE::NiPoint3& point) {
         auto* box = bound && bound->data ? netimmerse_cast<RE::BSMultiBoundAABB*>(bound->data.get()) : nullptr;
         if (!box || box->size.x < 0 || box->size.y < 0 || box->size.z < 0) {
@@ -30,7 +37,7 @@ namespace {
                 continue;
             }
             float distance = BannerBoundDistanceSquared(room->GetRuntimeData().multiBound.get(), center);
-            for (const auto& joined : room->joinedMultiBoundList) {
+            for (const auto& joined : JoinedBannerBounds(room.get())) {
                 distance = std::min(distance, BannerBoundDistanceSquared(joined.get(), center));
             }
             if (!std::isfinite(distance)) {
@@ -55,7 +62,7 @@ namespace {
         if (bound->QWithinPoint(point)) {
             return true;
         }
-        for (const auto& joined : room->joinedMultiBoundList) {
+        for (const auto& joined : JoinedBannerBounds(room)) {
             if (joined && joined->QWithinPoint(point)) {
                 return true;
             }
