@@ -26,6 +26,8 @@ namespace BP::Settings {
     inline bool bEnableInterior = true;
     inline int iMaxPhysicsBanners = 64;
     inline float fBannerWeightMult = 1.f;
+    // Skyrim VR only: weapon speed (game units per second, relative to the player's body) that counts as a swing.
+    inline float fVRSwingSpeed = 250.f;
 
     struct Values {
         bool degradation = true;
@@ -36,11 +38,12 @@ namespace BP::Settings {
         bool interior = true;
         int maxPhysicsBanners = 64;
         float bannerWeightMult = 1.f;
+        float vrSwingSpeed = 250.f;
     };
 
     inline Values Read(std::istream& input) {
         Values settings;
-        bool inGeneral = false, inMagic = false, magicOverride = false;
+        bool inGeneral = false, inMagic = false, inVR = false, magicOverride = false;
         std::string line;
         auto trim = [](std::string_view value) {
             const auto first = value.find_first_not_of(" \t\r\n");
@@ -73,9 +76,10 @@ namespace BP::Settings {
                 const auto section = trim(value.substr(1, value.size() - 2));
                 inGeneral = equal(section, "General");
                 inMagic = equal(section, "Magic");
+                inVR = equal(section, "VR");
                 continue;
             }
-            if (!inGeneral && !inMagic) {
+            if (!inGeneral && !inMagic && !inVR) {
                 continue;
             }
             const auto split = value.find('=');
@@ -83,6 +87,17 @@ namespace BP::Settings {
                 continue;
             }
             const auto key = trim(value.substr(0, split)), setting = trim(value.substr(split + 1));
+            if (inVR) {
+                if (equal(key, "fSwingSpeed")) {
+                    float speed = 250;
+                    auto result = std::from_chars(setting.data(), setting.data() + setting.size(), speed);
+                    if (result.ec == std::errc{} && result.ptr == setting.data() + setting.size() &&
+                        std::isfinite(speed) && speed >= 25.f && speed <= 5000.f) {
+                        settings.vrSwingSpeed = speed;
+                    }
+                }
+                continue;
+            }
             if (inMagic) {
                 if (equal(key, "bEnableMagicDegradation")) {
                     if (setting == "0" || setting == "1") {
@@ -161,9 +176,14 @@ namespace BP::Settings {
 namespace BP {
     inline constexpr REL::Version runtimeSE{1, 5, 97, 0};
     inline constexpr REL::Version runtimeCurrent{1, 7, 104, 0};
+    inline constexpr REL::Version runtimeVR{1, 4, 15, 0};
 
     inline constexpr bool supportsRuntime(REL::Version version) {
-        return version == runtimeSE || (version.major() == 1 && version.minor() == 6) || version == runtimeCurrent;
+        // SKSEVR reports the VR runtime as 1.4.15.1 while CommonLib names it 1.4.15.0, so the build number is ignored.
+        const bool vr = version.major() == runtimeVR.major() && version.minor() == runtimeVR.minor() &&
+                        version.patch() == runtimeVR.patch();
+        return version == runtimeSE || (version.major() == 1 && version.minor() == 6) || version == runtimeCurrent ||
+               vr;
     }
 }
 

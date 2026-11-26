@@ -110,6 +110,10 @@ namespace BP {
     static void (*originalWind)(hdt::SkinnedMeshWorld*, float) = nullptr;
 
     static bool gameFocused() {
+        // In VR the player is in the headset and the desktop mirror window is often not focused.
+        if (REL::Module::IsVR()) {
+            return true;
+        }
         DWORD process = 0;
         const auto window = GetForegroundWindow();
         return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();

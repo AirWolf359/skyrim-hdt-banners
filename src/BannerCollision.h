@@ -368,6 +368,40 @@ namespace hdt {
                         (before.capsule.b - current.capsule.b).length2()) < 2048.0f * 2048.0f;
     }
 
+    // Skyrim VR: fastest weapon end speed (units/s) relative to the body's first capsule, so walking or
+    // turning does not count as a swing. Shapes before bodyCount are body capsules, the rest are weapons.
+    inline float BannerVRSwingSpeed(const std::vector<BannerActorShape>& before,
+                                    const std::vector<BannerActorShape>& current, size_t bodyCount, float dt) {
+        if (dt <= 0 || before.empty() || bodyCount >= current.size()) {
+            return 0;
+        }
+        auto find = [&](const BannerActorShape& shape) -> const BannerActorShape* {
+            for (const auto& old : before) {
+                if (BannerActorCanSweep(old, shape)) {
+                    return &old;
+                }
+            }
+            return nullptr;
+        };
+        btVector3 bodyMotion(0, 0, 0);
+        if (bodyCount > 0) {
+            if (const auto* body = find(current[0])) {
+                bodyMotion = current[0].capsule.a - body->capsule.a;
+            }
+        }
+        float fastest = 0;
+        for (size_t i = bodyCount; i < current.size(); ++i) {
+            const auto* old = find(current[i]);
+            if (!old) {
+                continue;
+            }
+            const auto a = (current[i].capsule.a - old->capsule.a - bodyMotion).length();
+            const auto b = (current[i].capsule.b - old->capsule.b - bodyMotion).length();
+            fastest = std::max(fastest, std::max(a, b) / dt);
+        }
+        return fastest;
+    }
+
     inline bool MakeBannerWeaponCapsule(const btVector3& minimum, const btVector3& maximum, const btTransform& world,
                                         float scale, BannerActorCapsule& capsule) {
         const auto extent = maximum - minimum;

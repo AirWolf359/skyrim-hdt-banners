@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(BannerPhysics VERSION 1.1.0 LANGUAGES C CXX)
+# Version tracks jpsteel's upstream release in the first three parts; the fourth counts releases of this fork.
+project(BannerPhysics VERSION 1.3.0.0 LANGUAGES C CXX)
 
 if(NOT DEFINED OUTPUT_FOLDER)
     if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
@@ -24,6 +25,15 @@ if(NOT MINHOOK_ROOT AND DEFINED ENV{MINHOOK_ROOT})
     set(MINHOOK_ROOT "$ENV{MINHOOK_ROOT}")
 endif()
 
+# Default to the pinned submodules (git submodule update --init --recursive).
+if(NOT COMMONLIBSSE_NG_ROOT)
+    set(COMMONLIBSSE_NG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibVR")
+endif()
+
+if(NOT MINHOOK_ROOT)
+    set(MINHOOK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/extern/minhook")
+endif()
+
 if(NOT EXISTS "${COMMONLIBSSE_NG_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "Set COMMONLIBSSE_NG_ROOT to your CommonLibSSE-NG directory")
 endif()
@@ -45,6 +55,12 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(COMMONLIB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
 set(FETCHCONTENT_SOURCE_DIR_HDE64 "${MINHOOK_ROOT}" CACHE PATH "MinHook instruction decoder")
+
+# Record source paths relative to the repo (/pathmap, which MSVC only honors with /experimental:deterministic)
+# and only the PDB's file name (/PDBALTPATH below), so the DLL and PDB don't carry the build machine's local
+# paths. Set before add_subdirectory so CommonLib and MinHook get it too.
+file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" BP_SOURCE_DIR_NATIVE)
+add_compile_options(/experimental:deterministic "/pathmap:${BP_SOURCE_DIR_NATIVE}=.")
 
 if(COMMONLIB_LIBRARY)
     add_library(CommonLibSSE STATIC IMPORTED)
@@ -96,10 +112,15 @@ target_compile_definitions(${PROJECT_NAME}
         SKSE_SUPPORT_XBYAK=1
         SKSE_SUPPORT_PATCH_SAFETY=1
         _SILENCE_AMP_DEPRECATION_WARNINGS
+        BP_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+        BP_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+        BP_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+        BP_VERSION_TWEAK=${PROJECT_VERSION_TWEAK}
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE /Zc:preprocessor /permissive- /utf-8 /Z7 /W4 /wd4201)
-target_link_options(${PROJECT_NAME} PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF /MAP)
+target_link_options(${PROJECT_NAME} PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF /MAP /INCREMENTAL:NO "/PDBALTPATH:%_PDB%"
+                    /EXPERIMENTAL:DETERMINISTIC "/PATHMAP:${BP_SOURCE_DIR_NATIVE}=.")
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE

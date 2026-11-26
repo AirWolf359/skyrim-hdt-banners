@@ -5,7 +5,7 @@
 
 extern "C" __declspec(dllexport) constinit SKSE::PluginVersionData SKSEPlugin_Version = []() {
     SKSE::PluginVersionData v{};
-    v.PluginVersion(REL::Version(1, 1, 0, 0));
+    v.PluginVersion(REL::Version(BP_VERSION_MAJOR, BP_VERSION_MINOR, BP_VERSION_PATCH, BP_VERSION_TWEAK));
     v.PluginName("BannerPhysics");
     v.AuthorName("Banner Physics");
     v.UsesAddressLibrary();
@@ -17,7 +17,7 @@ extern "C" __declspec(dllexport) bool SKSEAPI SKSEPlugin_Query(const SKSE::Query
                                                                SKSE::PluginInfo* info) {
     info->infoVersion = SKSE::PluginInfo::kVersion;
     info->name = "BannerPhysics";
-    info->version = REL::Version(1, 1, 0, 0).pack();
+    info->version = REL::Version(BP_VERSION_MAJOR, BP_VERSION_MINOR, BP_VERSION_PATCH, BP_VERSION_TWEAK).pack();
     return !skse->IsEditor() && BP::supportsRuntime(skse->RuntimeVersion());
 }
 
@@ -37,6 +37,9 @@ namespace {
             case SKSE::MessagingInterface::kPostLoad:
                 if (!SKSE::GetMessagingInterface()->RegisterListener("hdtsmp64", FSMPMessageHandler)) {
                     logger::critical("FSMP messaging unavailable; banners disabled");
+                }
+                if (REL::Module::IsVR() && !GetModuleHandleW(L"vrik.dll")) {
+                    logger::warn("VRIK not detected; player body collision with banners will not follow the headset");
                 }
                 break;
             case SKSE::MessagingInterface::kDataLoaded:
@@ -64,7 +67,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     }
 
     if (skse->IsEditor() || !BP::supportsRuntime(skse->RuntimeVersion())) {
-        logger::critical("Unsupported runtime {}; targets are 1.5.97, 1.6.x and 1.7.104",
+        logger::critical("Unsupported runtime {}; targets are 1.5.97, 1.6.x, 1.7.104 and VR 1.4.15",
                          skse->RuntimeVersion().string());
         return false;
     }

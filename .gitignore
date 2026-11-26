@@ -1,0 +1,11 @@
+# Local Claude Code settings (holds the GitHub token)
+.claude/settings.local.json
+
+# Local test material: third-party binaries, address library, crash logs
+assets/
+
+# Build output
+build/
+
+# Editor workspace
+*.code-workspace

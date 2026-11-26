@@ -68,7 +68,10 @@ namespace hdt {
             if (!ref || ref->IsDisabled()) {
                 continue;
             }
-            auto* root = ref->Get3D2();
+            // Skyrim VR: the player's camera is always first person, but VRIK drives the third-person
+            // skeleton to follow the headset and controllers, so the body capsules come from that.
+            const bool vrPlayer = REL::Module::IsVR() && ref.get() == player;
+            auto* root = vrPlayer ? ref->Get3D(false) : ref->Get3D2();
             if (!root) {
                 continue;
             }
@@ -135,8 +138,10 @@ namespace hdt {
             const size_t bodyCapsuleCount = capsules.size();
             if (auto* actor = ref->As<RE::Actor>();
                 actor && actor->AsActorState()->GetWeaponState() == RE::WEAPON_STATE::kDrawn) {
-                const bool firstPerson = actor == player && RE::PlayerCamera::GetSingleton() &&
-                                         RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
+                // In VR the held weapon models live on the first-person skeleton, attached to the controllers.
+                const bool firstPerson = actor == player &&
+                                         (vrPlayer || (RE::PlayerCamera::GetSingleton() &&
+                                                       RE::PlayerCamera::GetSingleton()->IsInFirstPerson()));
                 const auto& biped = actor->GetBiped(firstPerson);
                 if (biped) {
                     auto* left = actor->GetEquippedObject(true);
@@ -183,16 +188,30 @@ namespace hdt {
             }
             const auto old = previous.find(ref->GetFormID());
             const auto* attacker = ref->As<RE::Actor>();
-            const bool attacking = attacker && attacker->IsAttacking();
             auto& attackCycle = m_bannerAttackCycles[ref->GetFormID()];
-            const auto attackState = attacker ? attacker->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
-            if (attacking && (!attackCycle.attacking ||
-                              (attackState == RE::ATTACK_STATE_ENUM::kDraw && attackCycle.state != attackState) ||
-                              (attackState == RE::ATTACK_STATE_ENUM::kSwing && attackCycle.state != attackState &&
-                               attackCycle.state != RE::ATTACK_STATE_ENUM::kDraw))) {
-                ++attackCycle.serial;
+            bool attacking = false;
+            if (vrPlayer) {
+                // VR melee is physical: swings rarely set the attack state, so a swing is a weapon moving
+                // fast enough. The lower release speed keeps one swing from counting as several hits.
+                const float swing =
+                    old != previous.end() ? BannerVRSwingSpeed(old->second, capsules, bodyCapsuleCount, dt) : 0.f;
+                const float threshold = BP::Settings::fVRSwingSpeed;
+                attacking = swing >= (attackCycle.attacking ? threshold * .5f : threshold);
+                if (attacking && !attackCycle.attacking) {
+                    ++attackCycle.serial;
+                }
+                attackCycle.state = RE::ATTACK_STATE_ENUM::kNone;
+            } else {
+                attacking = attacker && attacker->IsAttacking();
+                const auto attackState = attacker ? attacker->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
+                if (attacking && (!attackCycle.attacking ||
+                                  (attackState == RE::ATTACK_STATE_ENUM::kDraw && attackCycle.state != attackState) ||
+                                  (attackState == RE::ATTACK_STATE_ENUM::kSwing && attackCycle.state != attackState &&
+                                   attackCycle.state != RE::ATTACK_STATE_ENUM::kDraw))) {
+                    ++attackCycle.serial;
+                }
+                attackCycle.state = attackState;
             }
-            attackCycle.state = attackState;
             attackCycle.attacking = attacking;
             BannerBounds actorBounds;
             for (const auto& shape : capsules) {
